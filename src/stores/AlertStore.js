@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
-export const AlertStore = defineStore('error', () => {
+export const useAlertStore = defineStore('error', () => {
   const level = ref()  // 'success', 'error', 'info'
   const title = ref()  // -1 to stay open
   const details = ref()

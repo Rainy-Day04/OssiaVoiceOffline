@@ -3,9 +3,9 @@ import {ref} from "vue";
 import micImg from '@/assets/mic-button/mic.svg'
 import micHoverImg from '@/assets/mic-button/mic-hover.svg'
 import micActiveImg from '@/assets/mic-button/mic-active.svg'
-import {AlertStore} from "@/stores/AlertStore.js";
+import {useAlertStore} from "@/stores/AlertStore.js";
 
-const alertStore = AlertStore();
+const alertStore = useAlertStore();
 
 const micActive = ref(false)
 const micBtnImage = ref(micImg)
