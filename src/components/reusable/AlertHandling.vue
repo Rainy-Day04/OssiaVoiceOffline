@@ -1,8 +1,8 @@
 <script setup>
+import {AlertStore} from "@/stores/AlertStore";
 import {computed} from "vue";
-import {useAlertStore} from "@/stores/AlertStore.js";
 
-const alertStore = useAlertStore();
+const alertStore = AlertStore();
 
 const color = computed(() => {
   if (alertStore.level === 'success') {

@@ -8,7 +8,6 @@ const settingStore = useSettingsStore()
 
 function submitInterlocutorMessage() {
   if (messageStore.interlocutorPhrase !== '') {
-    messageStore.activeEditHistory = []
     messageStore.messageHistory.push({role: "user", content: messageStore.interlocutorPhrase})
     messageStore.generateWords()
     messageStore.generateSentences()

@@ -14,8 +14,6 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.0.2",
-    "@mlc-ai/web-llm": "^0.2.76",
     "openai": "^4.28.0",
     "pinia": "^2.1.7",
     "vue": "^3.4.15",
