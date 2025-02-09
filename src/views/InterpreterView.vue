@@ -15,8 +15,8 @@ const settingStore = useSettingsStore()
 <template>
   <div id="interpreter-grid">
     <v-overlay
-        v-model="settingStore.showSettingsOverlay"
-        class="align-center justify-center"
+      v-model="settingStore.showSettingsOverlay"
+      class="align-center justify-center"
     >
       <settings-overlay @close="settingStore.showSettingsOverlay=false"/>
     </v-overlay>
@@ -29,10 +29,18 @@ const settingStore = useSettingsStore()
       </div>
     </div>
     <div id="bottom-panel">
+      <div v-for="bar in loadingStore.additionalLoadingBars">
+        <div class="progressLoadingLabel"> {{ bar.message }}</div>
+        <v-progress-linear
+          :id="bar.id"
+          :model-value="bar.value"
+          rounded color="secondary"
+          class="progressLoading"/>
+      </div>
       <v-progress-linear
-          v-if="loadingStore.newSentenceLoading || loadingStore.newWordsLoading"
-          indeterminate rounded color="primary"
-          id="progressLoading"/>
+        v-if="(loadingStore.newSentenceLoading || loadingStore.newWordsLoading) && !Object.keys(loadingStore.additionalLoadingBars).length"
+        indeterminate rounded color="primary"
+        class="progressLoading"/>
       <div id="message-panels">
         <div id="message-builder" tabindex="0" class="tabbable">
           <MessageBuilder/>
@@ -78,7 +86,14 @@ const settingStore = useSettingsStore()
   z-index: 1;
 }
 
-#progressLoading {
+.progressLoadingLabel {
+  width: 100%;
+  text-align: center;
+  font-style: italic;
+  color: theme.$text-color-inverted-muted;
+}
+
+.progressLoading {
   min-height: 4px;
 }
 

@@ -5,6 +5,8 @@ import {useSettingsStore} from "@/stores/SettingsStore.js";
 import {useAlertStore} from "@/stores/AlertStore.js";
 import {useLoadingStore} from "@/stores/LoadingStore.js";
 import {CreateMLCEngine} from "@mlc-ai/web-llm";
+import {pipeline} from '@huggingface/transformers';
+import {sleep} from "openai/core";
 
 export const useMessageStore = defineStore('messages', () => {
   const interlocutorPhrase = ref('')
@@ -34,7 +36,9 @@ export const useMessageStore = defineStore('messages', () => {
       if (wordLoading) loadingStore.newWordsLoading++
       if (sentenceLoading) loadingStore.newSentenceLoading++
       try {
-        return await this.create(messages)
+        const responses = await this.create(messages)
+        console.debug(responses)
+        return responses
       } catch (err) {
         alertStore.showAlert('error', `Error (${err.type})`, err.message)
       } finally {
@@ -85,30 +89,60 @@ export const useMessageStore = defineStore('messages', () => {
     constructor() {
       super();
       this.engine = null;
+      this.engineLoading  = false;
     }
 
     async setup() {
       const initProgressCallback = (initProgress) => {
         console.log(initProgress);
+        if (initProgress.text.includes('Loading model from cache')) {
+          let progress = /\[(\d+\/\d+)]/.exec(initProgress.text)[1].split("/")
+          progress = (progress[0] /progress[1]) * 100
+          loadingStore.additionalLoadingBars['WebLLMBar'] = {
+            message: `loading model from cache - ${Math.round(progress)}%`,
+            value: progress
+          }
+        }
+        else {
+          loadingStore.additionalLoadingBars['WebLLMBar'] = {
+            message: `downloading offline model (only happens once) - ${Math.round(initProgress.progress * 100)}%`,
+            value: initProgress.progress * 100
+          }
+        }
       }
-      const selectedModel = "Llama-3.1-8B-Instruct-q4f32_1-MLC";
+      const selectedModel = "Hermes-3-Llama-3.2-3B-q4f32_1-MLC";
+      // const selectedModel = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
+      // const selectedModel = "Llama-3.1-8B-Instruct-q4f32_1-MLC";
 
       this.engine = await CreateMLCEngine(
         selectedModel,
         {initProgressCallback}, // engineConfig
       );
+      delete loadingStore.additionalLoadingBars['WebLLMBar']
     }
 
     async create(messages) {
       try {
         // WEB LLM
         // Callback function to update model loading progress
-        if (this.engine === null) {await this.setup()}
-
+        while (this.engineLoading) {
+          await sleep(100)
+        }
+        if (this.engine === null) {
+          this.engineLoading = true;
+          try {
+            await this.setup()
+          }
+          finally {
+            this.engineLoading = false;
+          }
+        }
+        console.log(messages)
         const completion = await this.engine.chat.completions.create({
           messages,
         });
-        return JSON.parse(completion.choices[0].message.content)['suggestions']
+        console.log(completion);
+        return JSON.parse(completion.choices[0].message.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
 
       } catch (err) {
         console.log(err)
@@ -116,38 +150,63 @@ export const useMessageStore = defineStore('messages', () => {
     }
   }
 
-  const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation()
-
-  function assembleHistory(command) {
-    const systemMessage = {role: "system", content: getSystemMessage()};
-
-    let finalCommand = ""
-    let messages = [systemMessage]
-    if (messageHistory.value.length !== 0) {
-      messages = messages.concat(messageHistory.value)
-    }
-    if (activeEditHistory.value.length !== 0) {
-      messages = messages.concat(activeEditHistory.value)
-    } // todo check active edit history is reset
-
-    var now = new Date();
-    finalCommand += `Here is some background context to the users current situation. You do not necessarily 
-    need to use it:\nDate and Time: ${now}\n`
-
-    if (settingStore.context) {
-      finalCommand += `${settingStore.context}\n`
+  class HFTransformersImplementation extends TextGenerator {
+    constructor() {
+      super();
+      this.engine = null;
+      this.engineLoading  = false;
     }
 
-    finalCommand += command
-    messages = messages.concat([{role: "system", content: finalCommand}])
-    return messages
+    async setup() {
+      const initProgressCallback = (initProgress) => {
+        console.log(initProgress);
+      }
+      // Allocate pipeline
+      // this.engine = await pipeline('text-generation', 'HuggingFaceTB/SmolLM2-1.7B-Instruct');
+      this.engine = await pipeline("text-generation", "onnx-community/Llama-3.2-1B-Instruct", {
+        device: "webgpu",
+        dtype: "q8", // auto, fp32, fp16, q8, int8, uint8, q4, bnb4, q4f16
+        progress_callback: initProgressCallback,
+      });
+    }
+
+    async create(messages) {
+      try {
+        while (this.engineLoading) {
+          await sleep(100)
+        }
+        if (this.engine === null) {
+          this.engineLoading = true;
+          try {
+            console.debug("Setting up enginez")
+            await this.setup()
+          }
+          finally {
+            this.engineLoading = false;
+          }
+        }
+        console.log(messages)
+        const output = await this.engine(messages);
+        console.log(output);
+        return JSON.parse(output[0].generated_text.at(-1).content.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
+
+      } catch (err) {
+        console.log(err)
+      }
+    }
   }
+
+  const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation() HFTransformersImplementation()
 
   // Respond
   async function generateSentences() {
-    const command = `Given the conversation history, generate a list of 3 to 5 short generic sentences the 
-      assistant may want to say`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    const command = `Given the Current Conversation History, generate a list of 3 to 5 short generic sentences the 
+      assistant may want to say. You must respond only with a valid JSON list of suggestions and NOTHING else.`
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true) || sentenceSuggestions.value
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -155,16 +214,25 @@ export const useMessageStore = defineStore('messages', () => {
   }
 
   async function generateWords() {
-    const command = `Given the conversation history, generate a short list of key words or 
-    very short phrases the assistant can select from to build a new sentence`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    const command = `Given the Current Conversation History, generate a short list of key words or 
+    very short phrases the user can select from to build a new sentence. You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   // Build Sentences
   async function generateSentencesFromWords(words) {
     const command = `Given the following list of words, generate between 3-5 sentences that the assistant 
     might be trying to say. Keep them generic but use all the words:\n${words}`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -172,22 +240,34 @@ export const useMessageStore = defineStore('messages', () => {
   }
 
   async function generateMoreWordsFromWords(words) {
-    const command = `Given the following list of words and the conversation history, generate another 
+    const command = `Given the following list of words and the Current Conversation History, generate another 
     list of related words that the assistant could select from to build a sentence:\n${words}`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   // New Sentence
   async function generateWordSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a short list of key words 
       the assistant can select from to build a new sentence, based around this new topic: '${topic}'`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   async function generateSentenceSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a list of 3 to 5 short generic sentences the 
       assistant may want to say, based around this new topic: '${topic}'`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -198,7 +278,11 @@ export const useMessageStore = defineStore('messages', () => {
   async function editSingleResponseWithHint(response, hint) {
     const command = `The response '${response}' was close. Suggest similar sentences based on the following hint':
     \n'${hint}'`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -208,12 +292,20 @@ export const useMessageStore = defineStore('messages', () => {
   async function generateWordsForSingleResponseFromHint(response, hint) {
     const command = `The response '${response}' was close. Generate a short list of key words or 
     very short phrases the assistant can select from to build a similar sentence, based on the hint: '${hint}'`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   async function editAllResponsesWithHint(hint) {
     const command = `Try again, using the following hint:\n'${hint}'`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -224,13 +316,21 @@ export const useMessageStore = defineStore('messages', () => {
     const command = `None of those suggestions were very useful. This time, instead of full sentences, generate 
     a short list of key words or very short phrases, that the assistant can select from to build 
     alternative sentences. Here is a hint to help guide you: '${hint}'`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   // Generate Response
   async function generateNewResponses() {
     const command = `Try again, providing 3 to 5 alternative suggestions`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
@@ -238,109 +338,181 @@ export const useMessageStore = defineStore('messages', () => {
   }
 
   async function generateWordSuggestionsFromHint(hint) {
-    const command = `Given the conversation history, generate a short list of key words or 
+    const command = `Given the Current Conversation History, generate a short list of key words or 
     very short phrases the assistant can select from to build a new sentence, based on the hint: '${hint}'`
-    wordSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), true, false)
+    let messages = [
+      {role: "system", content: getKeywordSystemMessage()},
+      {role: "user", content: command}
+    ]
+    wordSuggestions.value = await chatCompletionModel.getResponse(messages, true, false) || wordSuggestions.value
   }
 
   async function generateSentenceSuggestionsFromHint(hint) {
-    const command = `Given the conversation history, generate a list of 3 to 5 short generic sentences the 
+    const command = `Given the Current Conversation History, generate a list of 3 to 5 short generic sentences the 
       assistant may want to say, based on the hint: '${hint}'`
-    sentenceSuggestions.value = await chatCompletionModel.getResponse(assembleHistory(command), false, true)
+    let messages = [
+      {role: "system", content: getSentenceSystemMessage()},
+      {role: "user", content: command}
+    ]
+    sentenceSuggestions.value = await chatCompletionModel.getResponse(messages, false, true)
     activeEditHistory.value = activeEditHistory.value.concat([
       {role: "system", content: command},
       {role: "assistant", content: `{"suggestions": ["${sentenceSuggestions.value.join('", "')}"]}`}
     ])
   }
 
-  function getSystemMessage() {
-    return `
-You are an AI Bot for someone living with Motor Neurone Disease (MND) (hereafter referred to as the 'assistant'). You 
-receive a conversation between the assistant and another person (the 'user') . Your job 
-is to suggest various likely short sentences that the assistant might want to say to continue the conversation, or a short 
-list of key words and phrases the assistant can use to build a sentence.
+  function getKeywordSystemMessage() {
+    let systemMessage = `
+You are an AI Bot designed to assist someone living with Motor Neurone Disease (MND) (hereafter referred to as the 'user'). 
+You will receive a Current Conversation History between the user and another person (the 'interlocutor'). 
+Your role is to generate **key words and phrases** that may be relevant to the user's next sentence.'.  
 
-Here are the rules for the generated suggestions:
+**The user’s backstory is**:
 
-- suggestions SHOULD cover a broad range of emotions or affirmative and negative options where it is suitable
-- suggestions SHOULD reflect the personality and interests of the user given in the assistant's backstory, but only where appropriate.
-- suggestions SHOULD reflect any current context given.
-- suggestions SHOULD be tailored to the person you are speaking with
-- suggestions MUST be numerous enough to give variety, but not overwhelming in choice. Around 5 is often appropriate for sentences, about 10-15 for key words.
-- suggestions MUST not be so specific that they assume any information not given in the backstory
-- suggestions MUST not assume the user is always positive and polite. The user may often be frustrated, negative or tired 
-
-Here is the assistant's backstory:
 ${settingStore.backstory}
 
-The format of the conversation will be a list of previous messages between 'user' and 'assistant', followed by an instruction. 
-The instruction could be to generate suggested sentences or a likely words list, or to modify previous suggestions for example.
+**Rules for Suggestions**:  
+Follow these rules when creating suggestions:
 
-All your generated suggestions MUST be a valid JSON list.
-Below are some examples of inputs and outputs in the correct format. You will be playing the role of the assistant:
-user:
-just going to the bar, want anything?
+1. Include a variety of options reflecting different moods, opinions and perspectives.
+2. Tailor suggestions based on the assistant's personality, backstory, and current context, but avoid assuming details not provided.
+3. Keep suggestions concise, manageable, likely and useful for communication.
 
-system:
-Given the conversation history, generate a list of 3 to 5 short generic sentences the assistant may want to say
+**Examples**:
 
-assistant:
-{
-  "suggestions": [
-    "No I'm okay thanks",
-    "Oh go on then, a beer would be great thanks",
-    "Well, maybe a glass of water?"
-  ]
-}
+**Input Example**  
+*User:* "Hello, glad you're home"  
+*assistant:* "Yeah good to be back"
+*User:* "Did you have a good day at work?"  
+*User:* "Prompt: Generate 10-15 key words for a response."  
+
+**Output Example**  
+\`\`\`json
+[
+  "not",
+  "good",
+  "stressful",
+  "fun",
+  "tired",
+  "colleagues",
+  "deadline",
+  "meeting",
+  "boring",
+  "day off"
+]
+\`\`\`
+`
+    let now = new Date();
+    systemMessage += `Here is some background context to the users current situation. You do not necessarily 
+need to use it:\nDate and Time: ${now}\n`
+
+    if (settingStore.context) {
+      systemMessage += `${settingStore.context}\n`
+    }
+
+    systemMessage += `
+**Current Conversation History**
+\`\`\`json
+${JSON.stringify(messageHistory.value)}
+\`\`\`
+`
+
+    if (activeEditHistory.value.length !== 0) {
+      systemMessage += `
+**Edit History**
+\`\`\`json
+${JSON.stringify(activeEditHistory.value)}
+\`\`\`
+`
+    }
+
+    systemMessage += `
+The next message you receive will be the instruction for generating suggestions.
+`
+    return systemMessage
+  }
+
+  function getSentenceSystemMessage() {
+    let systemMessage = `
+You are an AI Bot designed to assist someone living with Motor Neurone Disease (MND) (hereafter referred to as the 'user'). 
+You will receive a Current Conversation History between the user and another person (the 'interlocutor'). 
+Your role is to generate **short example sentences** that the user may want to use to respond.'.  
+
+**The user’s backstory is**:
+
+${settingStore.backstory}
+
+**Rules for Suggestions**:  
+Follow these rules when creating suggestions:
+
+1. Include a variety of options reflecting different moods, opinions and perspectives.
+2. Tailor suggestions based on the assistant's personality, backstory, and current context, but avoid assuming details not provided.
+3. Keep suggestions concise, manageable, likely and useful for communication.
+
+**Examples**:
+
+**Input Example**
+*User:* "Fantastic game today hey?"  
+*assistant:* "Yeah it was brilliant. What a way to end the week"
+*User:* "just going to the bar, want anything?"  
+*User:* "Prompt: Given the conversation history, generate a list of 3 to 5 short generic sentences the assistant may want to say"  
+
+**Output Example**
+\`\`\`json
+[
+  "No I'm okay thanks",
+  "Oh go on then, a beer would be great thanks",
+  "Well, maybe a glass of water?"
+]
+\`\`\`
+
 -----
-user:
-have you seen Dune yet?
-
-system:
-Given the following list of words, generate between 3-5 sentences that the assistant might be trying to say. 
+**Input Example**
+*User:* "I'm about to head to the cinema"  
+*assistant:* "Oh what are you watching"
+*User:* "Dune, have you seen it yet?"  
+*User:* "Given the following list of words, generate between 3-5 sentences that the assistant might be trying to say. 
 Keep them generic but use all the words:
 ['recommend', 'watching']
+"  
 
-assistant:
-{
-  "suggestions": [
-    "No not yet, would you recommend watching it?",
-    "Yes it was great, I'd really recommend watching it!",
-    "Yes. It wasn't that good, wouldn't really recommend watching it",
-  ]
-}
-
------
-user:
-did you have a good day at work?
-
-system:
-Given the conversation history, generate a short list of key words or very short phrases the assistant can 
-select from to build a new sentence
-
-assistant:
-{
-  "suggestions": [
-    "not",
-    "good",
-    "bad",
-    "stressful",
-    "fun",
-    "boring",
-    "tired",
-    "weekend",
-    "boss",
-    "colleagues",
-    "office",
-    "hate",
-    "love",
-    "deadline",
-    "meeting",
-    "pressure",
-    "day off",
-  ]
-}
+**Output Example**
+\`\`\`json
+[
+  "No not yet, would you recommend watching it?",
+  "Yes it was great, I'd really recommend watching it!",
+  "Yes. It wasn't that good, wouldn't really recommend watching it",
+]
+\`\`\`
 `
+    let now = new Date();
+    systemMessage += `Here is some background context to the users current situation. You do not necessarily 
+need to use it:\nDate and Time: ${now}\n`
+
+    if (settingStore.context) {
+      systemMessage += `${settingStore.context}\n`
+    }
+
+    systemMessage += `
+**Current Conversation History**
+\`\`\`json
+${JSON.stringify(messageHistory.value)}
+\`\`\`
+`
+
+    if (activeEditHistory.value.length !== 0) {
+      systemMessage += `
+**Edit History**
+\`\`\`json
+${JSON.stringify(activeEditHistory.value)}
+\`\`\`
+`
+    }
+
+    systemMessage += `
+The next message you receive will be the instruction for generating suggestions.
+`
+    return systemMessage
   }
 
   return {
