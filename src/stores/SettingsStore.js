@@ -6,6 +6,35 @@ export const useSettingsStore = defineStore('settings', () => {
   const openAIAPIKey = ref(localStorage.getItem('openAIAPIKey') || '')
   const context = ref(localStorage.getItem('context') || '')
   const backstory = ref(localStorage.getItem('backstory') || '')
+  const voiceClips = ref([])
+
+  try {
+    const storedClips = JSON.parse(localStorage.getItem('voiceClips'));
+    if (Array.isArray(storedClips) && storedClips.length > 0) {
+      voiceClips.value = storedClips;
+    } else {
+      voiceClips.value = []; // Ensure no empty or invalid item appears
+    }
+  } catch (error) {
+    console.error("Error parsing voiceClips from localStorage:", error);
+    voiceClips.value = []; // Reset on error
+  }
+  
+
+  function saveVoiceClips(clips) {
+    localStorage.setItem('voiceClips', JSON.stringify(clips));
+    voiceClips.value = clips;
+  }
+
+  function cloneVoice() {
+    if (voiceClips.value.length === 0) {
+      console.error("No voice clips uploaded");
+      return;
+    }
+    console.log("Cloning voice with clips: ", voiceClips.value);
+    alert("Voice cloning complete! ✅");
+
+  }
 
   const exampleContext = ref(
     `Time: 20:37
@@ -159,6 +188,9 @@ assistant:
     openAIAPIKey,
     context,
     backstory,
+    voiceClips,
+    saveVoiceClips,
+    cloneVoice,
     exampleContext,
     exampleBackstory,
     getSystemMessage,
