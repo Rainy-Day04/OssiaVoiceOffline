@@ -215,10 +215,9 @@ const startVoiceCloning = () => {
         <v-btn
             id="save-btn"
             :disabled="!(settingsStore.liabilityAgreement &&
-                     settingsStore.cookieAgreement &&
-                     settingsStore.openAIAPIKey &&
-                     settingsStore.backstory
-                     )"
+              settingsStore.cookieAgreement &&
+              (selectedModel !== 'OpenAI' || settingsStore.openAIAPIKey) &&
+              settingsStore.backstory)"
             @click="emit('close'); settingsStore.save()">
           Let's Go
         </v-btn>
