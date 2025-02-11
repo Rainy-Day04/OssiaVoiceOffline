@@ -7,6 +7,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const context = ref(localStorage.getItem('context') || '')
   const backstory = ref(localStorage.getItem('backstory') || '')
   const voiceClips = ref([])
+  const selectedSTTModel = ref(localStorage.getItem('selectedSTTModel') || 'Choice 1'); // Default: Choice 1
 
   try {
     const storedClips = JSON.parse(localStorage.getItem('voiceClips'));
@@ -22,9 +23,11 @@ export const useSettingsStore = defineStore('settings', () => {
   
 
   function saveVoiceClips(clips) {
-    localStorage.setItem('voiceClips', JSON.stringify(clips));
+    const clipNames = clips.map(clip => ({ name: clip.name })); // Store only names
+    localStorage.setItem('voiceClips', JSON.stringify(clipNames));
     voiceClips.value = clips;
   }
+  
 
   function cloneVoice() {
     if (voiceClips.value.length === 0) {
@@ -34,6 +37,11 @@ export const useSettingsStore = defineStore('settings', () => {
     console.log("Cloning voice with clips: ", voiceClips.value);
     alert("Voice cloning complete! ✅");
 
+  }
+
+  function saveSelectedSTTModel(model) {
+    selectedSTTModel.value = model;
+    localStorage.setItem('selectedSTTModel', model);
   }
 
   const openAIAPIKeyIsValid = computed(() => {
@@ -102,6 +110,8 @@ senses pity.
     openAIAPIKeyIsValid,
     context,
     backstory,
+    selectedSTTModel,
+    saveSelectedSTTModel,
     voiceClips,
     saveVoiceClips,
     cloneVoice,

@@ -6,6 +6,8 @@ const settingsStore = useSettingsStore();
 const voiceClips = ref(null);
 const uploadedClips = ref([]);
 
+const selectedSTTModel = ref(settingsStore.selectedSTTModel || "Choice 1");
+
 const emit = defineEmits(["close"]);
 const showOpenAIKey = ref(false);
 
@@ -21,8 +23,12 @@ const selectedModel = ref(settingsStore.selectedModel || "OpenAI");
 onMounted(() => {
   isChrome.value = !!window.chrome;
   isDesktop.value = screen.width > 1000;
-  uploadedClips.value = settingsStore.voiceClips ? [...settingsStore.voiceClips] : [];
+
+  // Retrieve stored file names
+  const storedClips = JSON.parse(localStorage.getItem('voiceClips')) || [];
+  uploadedClips.value = storedClips.map(clip => ({ name: clip.name })); // Reconstruct file list
 });
+
 
 // Handle file upload
 const handleFileUpload = (event) => {
@@ -53,6 +59,10 @@ const saveSelectedModel = () => {
 
 const startVoiceCloning = () => {
   settingsStore.cloneVoice();
+};
+
+const saveSelectedSTTModel = () => {
+  settingsStore.saveSelectedSTTModel(selectedSTTModel.value);
 };
 
 </script>
@@ -110,6 +120,15 @@ const startVoiceCloning = () => {
               label="Select Model"
               :items="['OpenAI', 'Offline Model 1', 'Offline Model 2']"
               @update:modelValue="saveSelectedModel"
+            ></v-select>
+          </div>
+          <div class="group-content">
+            <h3 class="subheading">Choose Speech-to-Text Model</h3>
+            <v-select
+              v-model="selectedSTTModel"
+              label="Select Speech-to-Text Model"
+              :items="['Choice 1', 'Choice 2', 'Choice 3']"
+              @update:modelValue="saveSelectedSTTModel"
             ></v-select>
           </div>
 
