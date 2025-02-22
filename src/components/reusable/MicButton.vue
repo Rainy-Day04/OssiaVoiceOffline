@@ -1,97 +1,178 @@
 <script setup>
-import {ref} from "vue";
-import micImg from '@/assets/mic-button/mic.svg'
-import micHoverImg from '@/assets/mic-button/mic-hover.svg'
-import micActiveImg from '@/assets/mic-button/mic-active.svg'
-import {useAlertStore} from "@/stores/AlertStore.js";
+import { ref, onMounted } from "vue";
+import { pipeline } from "@huggingface/transformers";
+import micImg from '@/assets/mic-button/mic.svg';
+import micHoverImg from '@/assets/mic-button/mic-hover.svg';
+import micActiveImg from '@/assets/mic-button/mic-active.svg';
+import { useAlertStore } from "@/stores/AlertStore.js";
+import { useSettingsStore } from "@/stores/SettingsStore.js";
 
+// State Management
 const alertStore = useAlertStore();
+const settingsStore = useSettingsStore();
 
-const micActive = ref(false)
-const micBtnImage = ref(micImg)
+// Reactive Variables
+const micActive = ref(false);
+const micBtnImage = ref(micImg);
+const model = defineModel();
+const currentModelName = ref('');
+const isLoading = ref(true);
+const loadProgress = ref(0);
+const isProcessing = ref(false); // New processing state
+const emit = defineEmits(["textAvailable"]);
 
-const model = defineModel()
-const emit = defineEmits(['textAvailable'])
-const continuous = false
+// Audio Recording Variables
+let transcriber = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let audioStream = null;
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const recognition = new SpeechRecognition()
+// Model Configuration
+const modelMap = {
+  'Choice 1': 'Xenova/whisper-tiny.en',
+  'Choice 2': 'Xenova/whisper-base.en',
+  'Choice 3': 'Xenova/whisper-small.en'
+};
 
-recognition.continous = false
-recognition.interimResults = true
-recognition.lang = 'en-US'
+// Model Initialization
+onMounted(async () => {
+  try {
+    isLoading.value = true;
+    loadProgress.value = 10;
+    
+    const selectedModel = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
+    currentModelName.value = selectedModel;
+    
+    loadProgress.value = 30;
+    transcriber = await pipeline(
+      "automatic-speech-recognition",
+      selectedModel,
+      {
+        progress_callback: progress => {
+          loadProgress.value = 30 + Math.floor(progress * 70);
+        }
+      }
+    );
+    
+    loadProgress.value = 100;
+  } catch (error) {
+    alertStore.showAlert("error", "Model Load Failed", error.message);
+  } finally {
+    isLoading.value = false;
+  }
+});
 
-function micHover() {
-  if (micActive.value) return
-  micBtnImage.value = micHoverImg
-}
+// Audio Recording Functions
+async function startRecording() {
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(audioStream);
+    audioChunks = [];
 
-function micUnhover() {
-  if (micActive.value) return
-  micBtnImage.value = micImg
-}
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
 
-function micClick() {
-  micActive.value = !micActive.value
-  if (micActive.value) {
-    micBtnImage.value = micActiveImg
-    startRecognition()
-  } else {
-    micBtnImage.value = micImg
-    recognition.stop()
+    mediaRecorder.onstop = async () => {
+      isProcessing.value = true; // Start processing
+      try {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+        const output = await transcriber(URL.createObjectURL(audioBlob));
+        
+        if (output?.text) {
+          model.value = output.text;
+          emit("textAvailable", output.text);
+        }
+      } catch (error) {
+        alertStore.showAlert("error", "Transcription Failed", error.message);
+      } finally {
+        cleanup();
+        isProcessing.value = false; // End processing
+      }
+    };
+
+    mediaRecorder.start();
+  } catch (error) {
+    alertStore.showAlert("error", "Microphone Access Denied", error.message);
+    cleanup();
   }
 }
 
-function startRecognition() {
-    recognition.onstart = () => {
-      console.log("Listening!")
-    }
-    recognition.start()
-    recognition.onend = () => {
-        emit('textAvailable')
-        if (continuous && micActive.value) {
-          console.log("...continue listening...")
-          recognition.start()
-        } else if (micActive.value) {
-          micClick()
-        }
-      }
-
-    recognition.onresult = event => {
-      let interimTranscript = ''
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          model.value = transcript
-        }
-        else {
-          interimTranscript += transcript
-          model.value = interimTranscript
-        }
-      }
-    }
-
-    recognition.onerror = event => {
-      alertStore.showAlert('error', "Error occurred in recognition", event.error)
-    }
+function stopRecording() {
+  if (mediaRecorder?.state === "recording") {
+    mediaRecorder.stop();
+  }
 }
 
+function cleanup() {
+  if (audioStream) {
+    audioStream.getTracks().forEach(track => track.stop());
+    audioStream = null;
+  }
+  mediaRecorder = null;
+  audioChunks = [];
+  micActive.value = false;
+  micBtnImage.value = micImg;
+}
 
+// UI Interactions
+const micHover = () => !micActive.value && (micBtnImage.value = micHoverImg);
+const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
+
+const micClick = async () => {
+  try {
+    if (!micActive.value && !isLoading.value) {
+      micActive.value = true;
+      micBtnImage.value = micActiveImg;
+      await startRecording();
+    } else {
+      micActive.value = false;
+      micBtnImage.value = micImg;
+      stopRecording();
+    }
+  } catch (error) {
+    alertStore.showAlert("error", "Microphone Error", error.message);
+    cleanup();
+  }
+};
 </script>
 
 <template>
   <div id="mic-btn-container">
-    <img id="mic-btn" :class="{ haloGrow: micActive }" alt="mic-icon" :src="micBtnImage" @mouseenter="micHover" @mouseleave="micUnhover"
-         @click="micClick"/>
+    <!-- Loading Overlay -->
+    <div v-show="isLoading" class="loading-overlay">
+      <div class="progress-bar">
+        <div class="progress" :style="{ width: loadProgress + '%' }"></div>
+      </div>
+      <div class="loading-text">Loading Model: {{ currentModelName }}</div>
+    </div>
+
+    <!-- Full-Screen Processing Animation -->
+    <div v-show="isProcessing" class="processing-animation">
+      <div class="processing-spinner"></div>
+      <div class="processing-text">Processing Audio...</div>
+    </div>
+
+    <!-- Microphone Button -->
+    <img 
+      id="mic-btn"
+      :class="{ 
+        haloGrow: micActive,
+        'loading-state': isLoading 
+      }"
+      alt="Microphone"
+      :src="micBtnImage"
+      @mouseenter="!isLoading && micHover()"
+      @mouseleave="!isLoading && micUnhover()"
+      @click="!isLoading && micClick()"
+    />
   </div>
 </template>
-<style scoped>
 
+<style scoped>
 #mic-btn-container {
   display: flex;
   align-items: center;
-  align-content: center;
   justify-content: center;
   height: 100%;
 }
@@ -101,11 +182,7 @@ function startRecognition() {
   height: 75%;
   cursor: pointer;
   position: relative;
-  align-self: center;
-  justify-self: center;
-  justify-content: center;
 }
-
 
 .haloGrow {
   border-style: solid;
@@ -113,24 +190,96 @@ function startRecognition() {
   animation-duration: 1.1s;
   animation-iteration-count: infinite;
   animation-timing-function: ease-out;
-  //border-color: rgba(69, 189, 69, 0.9);
-  //border-width: 20px;
-  //border-radius: 100%;
-  //animation-direction: alternate;
 }
 
 @keyframes halo {
   from {
     border-color: rgba(69, 189, 69, 0.9);
     border-width: 0;
-    border-radius: 75%;
+    border-radius: 100%; /* Maintain circular border */
   }
   to {
     border-color: transparent;
     border-width: 20px;
-    border-radius: 100%;
+    border-radius: 100%; /* Maintain circular border */
   }
 }
 
+/* Full-Screen Processing Animation */
+.processing-animation {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
 
+.processing-spinner {
+  width: 50px;
+  height: 50px;
+  border: 6px solid #f3f3f3;
+  border-top: 6px solid #41b883;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+.processing-text {
+  font-size: 1.2em;
+  font-weight: 500;
+  color: #e6e6e6;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Loading Overlay */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.95);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1001;
+}
+
+/* Progress Bar */
+.progress-bar {
+  width: 200px;
+  height: 8px;
+  background: #eee;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress {
+  height: 100%;
+  background: linear-gradient(90deg, #41b883, #35495e);
+  transition: width 0.3s ease;
+}
+
+.loading-text {
+  margin-top: 8px;
+  color: #2c3e50;
+  font-size: 0.9em;
+}
+
+/* Loading State */
+.loading-state {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 </style>
