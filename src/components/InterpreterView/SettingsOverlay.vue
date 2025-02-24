@@ -18,7 +18,7 @@ const closeAPIWarning = ref(false);
 const closeBrowserWarning = ref(false);
 
 // Model Selection (Default: OpenAI)
-const selectedModel = ref(settingsStore.selectedModel || "OpenAI");
+const selectedModel = ref(settingsStore.selectedLLMModel || "OpenAI");
 
 onMounted(() => {
   isChrome.value = !!window.chrome;
@@ -54,7 +54,7 @@ const removeClip = (index) => {
 
 // Save selected model to store
 const saveSelectedModel = () => {
-  settingsStore.selectedModel = selectedModel.value;
+  settingsStore.saveSelectedLLMModel(selectedModel.value);
 };
 
 const startVoiceCloning = () => {
@@ -118,7 +118,7 @@ const saveSelectedSTTModel = () => {
             <v-select
               v-model="selectedModel"
               label="Select Model"
-              :items="['OpenAI', 'Offline Model 1', 'Offline Model 2']"
+              :items="['OpenAI', '9b Model', '3b Model']"
               @update:modelValue="saveSelectedModel"
             ></v-select>
           </div>

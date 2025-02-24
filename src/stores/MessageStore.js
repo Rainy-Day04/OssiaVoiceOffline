@@ -5,7 +5,6 @@ import {useSettingsStore} from "@/stores/SettingsStore.js";
 import {useAlertStore} from "@/stores/AlertStore.js";
 import {useLoadingStore} from "@/stores/LoadingStore.js";
 import {CreateMLCEngine} from "@mlc-ai/web-llm";
-import {pipeline} from '@huggingface/transformers';
 import {sleep} from "openai/core";
 
 export const useMessageStore = defineStore('messages', () => {
@@ -25,6 +24,8 @@ export const useMessageStore = defineStore('messages', () => {
   const settingStore = useSettingsStore()
   const alertStore = useAlertStore()
   const loadingStore = useLoadingStore()
+
+  console.log(settingStore.selectedLLMModel);
 
   class TextGenerator {
     constructor(additionalDependencies = []) {
@@ -110,9 +111,10 @@ export const useMessageStore = defineStore('messages', () => {
           }
         }
       }
-      const selectedModel = "Hermes-3-Llama-3.2-3B-q4f32_1-MLC";
-      // const selectedModel = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
-      // const selectedModel = "Llama-3.1-8B-Instruct-q4f32_1-MLC";
+      const selectedModel = settingStore.selectedLLMModel==="9b Model"
+        ? "gemma-2-9b-it-q4f16_1-MLC"
+        : "gemma-2-2b-it-q4f16_1-MLC";
+      //const selectedModel = "gemma-2-2b-it-q4f16_1-MLC";
 
       this.engine = await CreateMLCEngine(
         selectedModel,
@@ -150,53 +152,11 @@ export const useMessageStore = defineStore('messages', () => {
     }
   }
 
-  class HFTransformersImplementation extends TextGenerator {
-    constructor() {
-      super();
-      this.engine = null;
-      this.engineLoading  = false;
-    }
-
-    async setup() {
-      const initProgressCallback = (initProgress) => {
-        console.log(initProgress);
-      }
-      // Allocate pipeline
-      // this.engine = await pipeline('text-generation', 'HuggingFaceTB/SmolLM2-1.7B-Instruct');
-      this.engine = await pipeline("text-generation", "onnx-community/Llama-3.2-1B-Instruct", {
-        device: "webgpu",
-        dtype: "q8", // auto, fp32, fp16, q8, int8, uint8, q4, bnb4, q4f16
-        progress_callback: initProgressCallback,
-      });
-    }
-
-    async create(messages) {
-      try {
-        while (this.engineLoading) {
-          await sleep(100)
-        }
-        if (this.engine === null) {
-          this.engineLoading = true;
-          try {
-            console.debug("Setting up enginez")
-            await this.setup()
-          }
-          finally {
-            this.engineLoading = false;
-          }
-        }
-        console.log(messages)
-        const output = await this.engine(messages);
-        console.log(output);
-        return JSON.parse(output[0].generated_text.at(-1).content.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
-
-      } catch (err) {
-        console.log(err)
-      }
-    }
-  }
-
-  const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation() HFTransformersImplementation()
+  console.log(settingStore.selectedLLMModel);
+  const chatCompletionModel = settingStore.selectedLLMModel === "OpenAI"
+    ? new OpenAIImplementation()
+    : new WebLLMImplementation();
+  //const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation() HFTransformersImplementation()
 
   // Respond
   async function generateSentences() {
