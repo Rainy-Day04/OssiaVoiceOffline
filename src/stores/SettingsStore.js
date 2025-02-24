@@ -44,6 +44,7 @@ export const useSettingsStore = defineStore('settings', () => {
   function saveSelectedSTTModel(model) {
     selectedSTTModel.value = model;
     localStorage.setItem('selectedSTTModel', model);
+    window.location.reload(); // Reload the page to apply the new model
   }
 
   function saveSelectedLLMModel(model) {
