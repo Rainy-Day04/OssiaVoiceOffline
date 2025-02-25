@@ -1,25 +1,72 @@
 <script setup>
-import {useSettingsStore} from "@/stores/SettingsStore.js";
-import {onMounted, ref} from "vue";
+import { useSettingsStore } from "@/stores/SettingsStore.js";
+import { onMounted, ref } from "vue";
 
-const settingsStore = useSettingsStore()
+const settingsStore = useSettingsStore();
+const voiceClips = ref(null);
+const uploadedClips = ref([]);
 
-const emit = defineEmits(['close'])
-const showOpenAIKey = ref(false)
+const selectedSTTModel = ref(settingsStore.selectedSTTModel || "Choice 1");
 
-const isChrome = ref(true)
-const isDesktop = ref(true)
+const emit = defineEmits(["close"]);
+const showOpenAIKey = ref(false);
 
-const closeAPIWarning = ref(false)
-const closeBrowserWarning = ref(false)
+const isChrome = ref(true);
+const isDesktop = ref(true);
+
+const closeAPIWarning = ref(false);
+const closeBrowserWarning = ref(false);
+
+// Model Selection (Default: OpenAI)
+const selectedModel = ref(settingsStore.selectedLLMModel || "OpenAI");
 
 onMounted(() => {
-  isChrome.value = !!window.chrome
-  isDesktop.value = screen.width > 1000
-  console.log("ischromedesktop", isChrome.value, isDesktop.value)
-})
+  isChrome.value = !!window.chrome;
+  isDesktop.value = screen.width > 1000;
+
+  // Retrieve stored file names
+  const storedClips = JSON.parse(localStorage.getItem('voiceClips')) || [];
+  uploadedClips.value = storedClips.map(clip => ({ name: clip.name })); // Reconstruct file list
+});
+
+
+// Handle file upload
+const handleFileUpload = (event) => {
+  if (event && event.target.files.length > 0) {
+    const newClips = Array.from(event.target.files);
+
+    // Prevent duplicates
+    const uniqueClips = newClips.filter(
+      (newClip) => !uploadedClips.value.some((existingClip) => existingClip.name === newClip.name)
+    );
+
+    uploadedClips.value = [...uploadedClips.value, ...uniqueClips];
+    settingsStore.saveVoiceClips(uploadedClips.value);
+  }
+};
+
+// Remove a clip
+const removeClip = (index) => {
+  uploadedClips.value.splice(index, 1);
+  uploadedClips.value = [...uploadedClips.value]; // Force reactivity update
+  settingsStore.saveVoiceClips(uploadedClips.value);
+};
+
+// Save selected model to store
+const saveSelectedModel = () => {
+  settingsStore.saveSelectedLLMModel(selectedModel.value);
+};
+
+const startVoiceCloning = () => {
+  settingsStore.cloneVoice();
+};
+
+const saveSelectedSTTModel = () => {
+  settingsStore.saveSelectedSTTModel(selectedSTTModel.value);
+};
 
 </script>
+
 
 <template>
   <div id="overlay-container">
@@ -65,24 +112,47 @@ onMounted(() => {
           </v-chip>
         </div>
         <h2 class="title">Settings</h2>
-        <div class="group-content">
-          <h3 class="subheading"><span style="color: red">*</span> OpenAI API Key</h3>
-          <span>
-        Ossia is built on top of ChatGPT. You need an OpenAI account to use Ossia, as you would if you were using ChatGPT
-        normally. Visit their website <a href="https://platform.openai.com/api-keys">here</a> to generate a personal account key.
-            We suggest also setting spending limits to control your spend with OpenAI.
-        </span>
-          <div id="api-key-input-wrapper">
-            <v-text-field id="api-key-input"
-                          :append-inner-icon="showOpenAIKey ? 'mdi-eye' : 'mdi-eye-off'"
-                          @click:append-inner="showOpenAIKey = !showOpenAIKey"
-                          :type="showOpenAIKey ? 'text' : 'password'"
-                          v-model="settingsStore.openAIAPIKey"
-                          label="Do not share this key. E.g. sf-lx3l5DaIyg..."/>
-            <strong id="important">Important!</strong> You will be charged for each request Ossia makes to ChatGPT -
-            do not share your key with anyone! (We cannot and do not store your key - see the video for details)
+          <!-- Model Selection (At the Top of Settings) -->
+          <div class="group-content">
+            <h3 class="subheading">Choose AI Model</h3>
+            <v-select
+              v-model="selectedModel"
+              label="Select Model"
+              :items="['OpenAI', '9b Model', '3b Model']"
+              @update:modelValue="saveSelectedModel"
+            ></v-select>
           </div>
-        </div>
+          <div class="group-content">
+            <h3 class="subheading">Choose Speech-to-Text Model</h3>
+            <v-select
+              v-model="selectedSTTModel"
+              label="Select Speech-to-Text Model"
+              :items="['Choice 1', 'Choice 2', 'Choice 3']"
+              @update:modelValue="saveSelectedSTTModel"
+            ></v-select>
+          </div>
+
+          <!-- OpenAI API Key (Only Shows if OpenAI is Selected) -->
+          <div class="group-content" v-if="selectedModel === 'OpenAI'">
+            <h3 class="subheading"><span style="color: red">*</span> OpenAI API Key</h3>
+            <span>
+              Ossia is built on top of ChatGPT. You need an OpenAI account to use Ossia, as you would if you were using ChatGPT
+              normally. Visit their website <a href="https://platform.openai.com/api-keys">here</a> to generate a personal account key.
+              We suggest also setting spending limits to control your spend with OpenAI.
+            </span>
+            <div id="api-key-input-wrapper">
+              <v-text-field
+                id="api-key-input"
+                :append-inner-icon="showOpenAIKey ? 'mdi-eye' : 'mdi-eye-off'"
+                @click:append-inner="showOpenAIKey = !showOpenAIKey"
+                :type="showOpenAIKey ? 'text' : 'password'"
+                v-model="settingsStore.openAIAPIKey"
+                label="Do not share this key. E.g. sf-lx3l5DaIyg..."
+              />
+              <strong id="important">Important!</strong> You will be charged for each request Ossia makes to ChatGPT - do not share your key with anyone!
+            </div>
+          </div>
+
         <div class="group-content">
           <h3 class="subheading"><span style="color: red">*</span> User Backstory</h3>
           Describe the user in as much detail as possible. e.g. name, hobbies, political leaning, temperament, family
@@ -93,6 +163,30 @@ onMounted(() => {
             <v-textarea id="backstory-input" label="user backstory" v-model="settingsStore.backstory" hide-details/>
           </div>
         </div>
+        <div class="group-content">
+          <h3 class="subheading">Voice Cloning</h3>
+          <p>Upload audio samples of your voice to generate a cloned voice model.</p>
+
+          <v-file-input
+            v-model="voiceClips"
+            multiple
+            label="Upload audio clips"
+            accept="audio/*"
+            @change="handleFileUpload"
+          ></v-file-input>
+
+          <div v-if="uploadedClips.length">
+            <h4>Uploaded Clips</h4>
+            <ul>
+              <li v-for="(clip, index) in uploadedClips" :key="index">
+                {{ clip.name }} <v-icon icon="mdi-delete" @click="removeClip(index)"></v-icon>
+              </li>
+            </ul>
+          </div>
+
+          <v-btn @click="startVoiceCloning" :disabled="uploadedClips.length === 0">Clone Voice</v-btn>
+        </div>
+
         <div class="group-content">
           <h3 class="subheading"><span style="color: red">*</span> Terms & Conditions and Cookies </h3>
           <v-checkbox v-model="settingsStore.liabilityAgreement" label="I agree that by using this software in beta I am doing so
@@ -140,10 +234,9 @@ onMounted(() => {
         <v-btn
             id="save-btn"
             :disabled="!(settingsStore.liabilityAgreement &&
-                     settingsStore.cookieAgreement &&
-                     settingsStore.openAIAPIKey &&
-                     settingsStore.backstory
-                     )"
+              settingsStore.cookieAgreement &&
+              (selectedModel !== 'OpenAI' || settingsStore.openAIAPIKey) &&
+              settingsStore.backstory)"
             @click="emit('close'); settingsStore.save()">
           Let's Go
         </v-btn>

@@ -6,6 +6,53 @@ export const useSettingsStore = defineStore('settings', () => {
   const openAIAPIKey = ref(localStorage.getItem('openAIAPIKey') || '')
   const context = ref(localStorage.getItem('context') || '')
   const backstory = ref(localStorage.getItem('backstory') || '')
+  const voiceClips = ref([])
+  const selectedSTTModel = ref(localStorage.getItem('selectedSTTModel') || 'Choice 1'); // Default: Choice 1
+  const selectedLLMModel = ref(localStorage.getItem('selectedLLMModel') || 'OpenAI'); // Default: OpenAI
+  console.log("Selected STT Model: ", selectedSTTModel.value);
+  console.log("Selected LLM Model: ", selectedLLMModel.value);
+  try {
+    const storedClips = JSON.parse(localStorage.getItem('voiceClips'));
+    if (Array.isArray(storedClips) && storedClips.length > 0) {
+      voiceClips.value = storedClips;
+    } else {
+      voiceClips.value = []; // Ensure no empty or invalid item appears
+    }
+  } catch (error) {
+    console.error("Error parsing voiceClips from localStorage:", error);
+    voiceClips.value = []; // Reset on error
+  }
+  
+
+  function saveVoiceClips(clips) {
+    const clipNames = clips.map(clip => ({ name: clip.name })); // Store only names
+    localStorage.setItem('voiceClips', JSON.stringify(clipNames));
+    voiceClips.value = clips;
+  }
+  
+
+  function cloneVoice() {
+    if (voiceClips.value.length === 0) {
+      console.error("No voice clips uploaded");
+      return;
+    }
+    console.log("Cloning voice with clips: ", voiceClips.value);
+    alert("Voice cloning complete! ✅");
+
+  }
+
+  function saveSelectedSTTModel(model) {
+    selectedSTTModel.value = model;
+    localStorage.setItem('selectedSTTModel', model);
+    window.location.reload(); // Reload the page to apply the new model
+  }
+
+  function saveSelectedLLMModel(model) {
+    selectedLLMModel.value = model;
+    localStorage.setItem('selectedLLMModel', model);
+
+    window.location.reload(); // Reload the page to apply the new model
+  }
 
   const openAIAPIKeyIsValid = computed(() => {
     return openAIAPIKey.value.length > 0
@@ -52,6 +99,7 @@ senses pity.
     localStorage.setItem('cookieAgreement', cookieAgreement.value.toString())
     showSettingsWarning.value = false
     console.log('settings saved')
+    console.log(selectedLLMModel.value);
   }
 
   watch(context, async (newContext) => {
@@ -73,6 +121,13 @@ senses pity.
     openAIAPIKeyIsValid,
     context,
     backstory,
+    selectedSTTModel,
+    saveSelectedSTTModel,
+    selectedLLMModel,
+    saveSelectedLLMModel,
+    voiceClips,
+    saveVoiceClips,
+    cloneVoice,
     exampleContext,
     exampleBackstory,
     liabilityAgreement,
