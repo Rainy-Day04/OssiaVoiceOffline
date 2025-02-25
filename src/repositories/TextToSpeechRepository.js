@@ -1,37 +1,42 @@
-window.voice = null;
-window.speechSynthesis.onvoiceschanged = function() {
-  window.voice = speechSynthesis.getVoices()[1];
-};
+import { pipeline } from '@huggingface/transformers';
+
+// window.voice = null;
+// window.speechSynthesis.onvoiceschanged = function() {
+//   window.voice = speechSynthesis.getVoices()[1];// };
 
 export default async function speak(text) {
 
-  if (!('speechSynthesis' in window)) {
-    alert('Your browser does not support speech synthesis. Please use a supported browser or speech ' +
-      'synthesis/recognition will not work');
-    return
+  const synthesizer = await pipeline('text-to-speech', 'Xenova/speecht5_tts', { dtype: 'fp32' });
+
+  // const response = await fetch('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin');
+  const response = await fetch('/custom_speaker_embeddings.bin');
+  
+  // const response = await fetch('/custom_speaker_embeddings_single.bin');
+
+  const buffer = await response.arrayBuffer();
+  console.log(buffer.length)
+  let speaker_embeddings = new Float32Array(buffer);
+  if (speaker_embeddings.length !== 512) {
+    speaker_embeddings = speaker_embeddings.slice(0, 512);
   }
+  const result = await synthesizer(text, { speaker_embeddings: speaker_embeddings });
+  console.log(result);
 
-  // Create a new instance of SpeechSynthesisUtterance.
-  const msg = new SpeechSynthesisUtterance();
+  const audioContext = new AudioContext();
 
-  // Set the text.
-  msg.text = text;
+  // Create an AudioBuffer with 1 channel, length equal to the audio array length, and the provided sample rate
+  const audioBuffer = audioContext.createBuffer(1, result.audio.length, result.sampling_rate);
 
-  // Set the attributes.
-  msg.volume = 1.0; // 0-1
-  msg.rate = 1.0; // 0.1-10
-  msg.pitch = 1; // 0-2
+  // Copy the Float32Array data into the AudioBuffer
+  audioBuffer.copyToChannel(result.audio, 0, 0);
 
-  // If a voice has been selected, find the voice and set the
-  // utterance instance's voice attribute.
-  // msg.voice = await speechSynthesis.getVoices().filter((voice) => {
-  //   console.log(voice.name)
-  //   console.log(voice.name == 'Aaron')
-  //   console.log(voice.name === 'Aaron')
-  //   return voice.name === 'Aaron';
-  // })[0];
-  msg.voice = window.voice;
-  // Queue this utterance.
-  window.speechSynthesis.cancel();  // stop saying anything else
-  window.speechSynthesis.speak(msg);
+  // Create a source node from the AudioBuffer
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+
+  // Connect the source to the audio context’s destination (the speakers)
+  source.connect(audioContext.destination);
+
+  // Start playback (note: browsers may require a user gesture to resume the AudioContext)
+  source.start();
 }
