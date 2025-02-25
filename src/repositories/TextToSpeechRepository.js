@@ -8,7 +8,10 @@ export default async function speak(text) {
 
   const synthesizer = await pipeline('text-to-speech', 'Xenova/speecht5_tts', { dtype: 'fp32' });
 
+  // Base Model for TTS
   // const response = await fetch('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin');
+
+  // Custom model to use voice customisation.
   const response = await fetch('/custom_speaker_embeddings.bin');
   
   // const response = await fetch('/custom_speaker_embeddings_single.bin');
