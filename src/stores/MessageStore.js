@@ -25,7 +25,6 @@ export const useMessageStore = defineStore('messages', () => {
   const alertStore = useAlertStore()
   const loadingStore = useLoadingStore()
 
-  console.log(settingStore.selectedLLMModel);
 
   class TextGenerator {
     constructor(additionalDependencies = []) {
@@ -144,7 +143,12 @@ export const useMessageStore = defineStore('messages', () => {
           messages,
         });
         console.log(completion);
-        return JSON.parse(completion.choices[0].message.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
+        console.log('the result is', completion.choices[0].message.content)
+        return JSON.parse(completion.choices[0].message.content.trim()                               
+        .replace(/(^[^[]+|[^\]]+$)/g, '')     
+        .replace(/,\s*]$/, ']')               
+        .replace(/"\s+"/g, '", "')            
+        .replace(/(?<=\{)\s*([^"]+?)\s*:/g, '"$1":'))
 
       } catch (err) {
         console.log(err)
@@ -187,7 +191,8 @@ export const useMessageStore = defineStore('messages', () => {
   // Build Sentences
   async function generateSentencesFromWords(words) {
     const command = `Given the following list of words, generate between 3-5 sentences that the assistant 
-    might be trying to say. Keep them generic but use all the words:\n${words}`
+    might be trying to say. Keep them generic but use all the words:\n${words},You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -201,7 +206,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateMoreWordsFromWords(words) {
     const command = `Given the following list of words and the Current Conversation History, generate another 
-    list of related words that the assistant could select from to build a sentence:\n${words}`
+    list of related words that the assistant could select from to build a sentence:\n${words},You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -212,7 +218,8 @@ export const useMessageStore = defineStore('messages', () => {
   // New Sentence
   async function generateWordSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a short list of key words 
-      the assistant can select from to build a new sentence, based around this new topic: '${topic}'`
+      the assistant can select from to build a new sentence, based around this new topic: '${topic}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -222,7 +229,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateSentenceSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a list of 3 to 5 short generic sentences the 
-      assistant may want to say, based around this new topic: '${topic}'`
+      assistant may want to say, based around this new topic: '${topic}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -237,7 +245,8 @@ export const useMessageStore = defineStore('messages', () => {
   // Edit Sentence
   async function editSingleResponseWithHint(response, hint) {
     const command = `The response '${response}' was close. Suggest similar sentences based on the following hint':
-    \n'${hint}'`
+    \n'${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -251,7 +260,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateWordsForSingleResponseFromHint(response, hint) {
     const command = `The response '${response}' was close. Generate a short list of key words or 
-    very short phrases the assistant can select from to build a similar sentence, based on the hint: '${hint}'`
+    very short phrases the assistant can select from to build a similar sentence, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -275,7 +285,8 @@ export const useMessageStore = defineStore('messages', () => {
   async function generateWordsForAllResponsesFromHint(hint) {
     const command = `None of those suggestions were very useful. This time, instead of full sentences, generate 
     a short list of key words or very short phrases, that the assistant can select from to build 
-    alternative sentences. Here is a hint to help guide you: '${hint}'`
+    alternative sentences. Here is a hint to help guide you: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -299,7 +310,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateWordSuggestionsFromHint(hint) {
     const command = `Given the Current Conversation History, generate a short list of key words or 
-    very short phrases the assistant can select from to build a new sentence, based on the hint: '${hint}'`
+    very short phrases the assistant can select from to build a new sentence, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -309,7 +321,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateSentenceSuggestionsFromHint(hint) {
     const command = `Given the Current Conversation History, generate a list of 3 to 5 short generic sentences the 
-      assistant may want to say, based on the hint: '${hint}'`
+      assistant may want to say, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
