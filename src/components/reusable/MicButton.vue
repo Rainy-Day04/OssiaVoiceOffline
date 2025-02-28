@@ -6,10 +6,12 @@ import micHoverImg from '@/assets/mic-button/mic-hover.svg';
 import micActiveImg from '@/assets/mic-button/mic-active.svg';
 import { useAlertStore } from "@/stores/AlertStore.js";
 import { useSettingsStore } from "@/stores/SettingsStore.js";
+import { useMicrophoneStore } from "@/stores/MicrophoneStore.js"; // Add this import
 
 // State Management
 const alertStore = useAlertStore();
 const settingsStore = useSettingsStore();
+const microphoneStore = useMicrophoneStore(); // Add this store
 
 // Reactive Variables
 const micActive = ref(false);
@@ -38,10 +40,14 @@ const modelMap = {
 onMounted(async () => {
   try {
     isLoading.value = true;
+    microphoneStore.setLoading(true); // Update store
+    
     loadProgress.value = 10;
+    microphoneStore.setLoadProgress(10);
     
     const selectedModel = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
     currentModelName.value = selectedModel;
+    microphoneStore.setCurrentModel(selectedModel);
     
     loadProgress.value = 30;
     transcriber = await pipeline(
@@ -50,15 +56,18 @@ onMounted(async () => {
       {
         progress_callback: progress => {
           loadProgress.value = 30 + Math.floor(progress * 70);
+          microphoneStore.setLoadProgress(30 + Math.floor(progress * 70));
         }
       }
     );
     
     loadProgress.value = 100;
+    microphoneStore.setLoadProgress(100);
   } catch (error) {
     alertStore.showAlert("error", "Model Load Failed", error.message);
   } finally {
     isLoading.value = false;
+    microphoneStore.setLoading(false);
   }
 });
 
@@ -74,7 +83,9 @@ async function startRecording() {
     };
 
     mediaRecorder.onstop = async () => {
-      isProcessing.value = true; // Start processing
+      isProcessing.value = true;
+      microphoneStore.setProcessing(true); // Update store
+      
       try {
         const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
         const output = await transcriber(URL.createObjectURL(audioBlob));
@@ -87,7 +98,8 @@ async function startRecording() {
         alertStore.showAlert("error", "Transcription Failed", error.message);
       } finally {
         cleanup();
-        isProcessing.value = false; // End processing
+        isProcessing.value = false;
+        microphoneStore.setProcessing(false); // Update store
       }
     };
 
@@ -112,6 +124,7 @@ function cleanup() {
   mediaRecorder = null;
   audioChunks = [];
   micActive.value = false;
+  microphoneStore.setActive(false); // Update store
   micBtnImage.value = micImg;
 }
 
@@ -123,10 +136,12 @@ const micClick = async () => {
   try {
     if (!micActive.value && !isLoading.value) {
       micActive.value = true;
+      microphoneStore.setActive(true); // Update store
       micBtnImage.value = micActiveImg;
       await startRecording();
     } else {
       micActive.value = false;
+      microphoneStore.setActive(false); // Update store
       micBtnImage.value = micImg;
       stopRecording();
     }
