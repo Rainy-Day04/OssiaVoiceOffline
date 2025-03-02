@@ -113,7 +113,7 @@ export const useMessageStore = defineStore('messages', () => {
       const selectedModel = settingStore.selectedLLMModel==="9b Model"
         ? "gemma-2-9b-it-q4f16_1-MLC"
         : "gemma-2-2b-it-q4f16_1-MLC";
-      //const selectedModel = "gemma-2-2b-it-q4f16_1-MLC";
+      //const selectedModel = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 
       this.engine = await CreateMLCEngine(
         selectedModel,
@@ -122,36 +122,50 @@ export const useMessageStore = defineStore('messages', () => {
       delete loadingStore.additionalLoadingBars['WebLLMBar']
     }
 
-    async create(messages) {
+    async create(messages, retryCount = 3) {
       try {
-        // WEB LLM
-        // Callback function to update model loading progress
         while (this.engineLoading) {
-          await sleep(100)
+          await sleep(100);
         }
+    
+        
         if (this.engine === null) {
           this.engineLoading = true;
           try {
-            await this.setup()
-          }
-          finally {
+            await this.setup();
+          } finally {
             this.engineLoading = false;
           }
         }
-        console.log(messages)
+    
+        console.log(messages);
+    
+        
         const completion = await this.engine.chat.completions.create({
           messages,
         });
+    
         console.log(completion);
-        console.log('the result is', completion.choices[0].message.content)
-        return JSON.parse(completion.choices[0].message.content.trim()                               
-        .replace(/(^[^[]+|[^\]]+$)/g, '')     
-        .replace(/,\s*]$/, ']')               
-        .replace(/"\s+"/g, '", "')            
-        .replace(/(?<=\{)\s*([^"]+?)\s*:/g, '"$1":'))
-
+        console.log('The result is', completion.choices[0].message.content);
+    
+        
+        return JSON.parse(
+          completion.choices[0].message.content.trim()
+            .replace(/(^[^[]+|[^\]]+$)/g, '')     
+            .replace(/,\s*]$/, ']')               
+            .replace(/"\s+"/g, '", "')            
+            .replace(/(?<=\{)\s*([^"]+?)\s*:/g, '"$1":')
+        );
+    
       } catch (err) {
-        console.log(err)
+        console.log(`Error, retrying count ${3-retryCount}`, err);
+        
+        if (retryCount > 0) { 
+          await sleep(1000); 
+          return this.create(messages, retryCount - 1); 
+        } else {
+          throw new Error("failed to generate response");
+        }
       }
     }
   }
