@@ -8,7 +8,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const backstory = ref(localStorage.getItem('backstory') || '')
   const voiceClips = ref([])
   const selectedSTTModel = ref(localStorage.getItem('selectedSTTModel') || 'Choice 1'); // Default: Choice 1
-
+  const selectedLLMModel = ref(localStorage.getItem('selectedLLMModel') || 'OpenAI'); // Default: OpenAI
+  console.log("Selected STT Model: ", selectedSTTModel.value);
+  console.log("Selected LLM Model: ", selectedLLMModel.value);
   try {
     const storedClips = JSON.parse(localStorage.getItem('voiceClips'));
     if (Array.isArray(storedClips) && storedClips.length > 0) {
@@ -42,6 +44,14 @@ export const useSettingsStore = defineStore('settings', () => {
   function saveSelectedSTTModel(model) {
     selectedSTTModel.value = model;
     localStorage.setItem('selectedSTTModel', model);
+    window.location.reload(); // Reload the page to apply the new model
+  }
+
+  function saveSelectedLLMModel(model) {
+    selectedLLMModel.value = model;
+    localStorage.setItem('selectedLLMModel', model);
+
+    window.location.reload(); // Reload the page to apply the new model
   }
 
   const openAIAPIKeyIsValid = computed(() => {
@@ -89,6 +99,7 @@ senses pity.
     localStorage.setItem('cookieAgreement', cookieAgreement.value.toString())
     showSettingsWarning.value = false
     console.log('settings saved')
+    console.log(selectedLLMModel.value);
   }
 
   watch(context, async (newContext) => {
@@ -112,6 +123,8 @@ senses pity.
     backstory,
     selectedSTTModel,
     saveSelectedSTTModel,
+    selectedLLMModel,
+    saveSelectedLLMModel,
     voiceClips,
     saveVoiceClips,
     cloneVoice,

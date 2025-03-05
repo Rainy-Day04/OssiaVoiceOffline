@@ -5,7 +5,6 @@ import {useSettingsStore} from "@/stores/SettingsStore.js";
 import {useAlertStore} from "@/stores/AlertStore.js";
 import {useLoadingStore} from "@/stores/LoadingStore.js";
 import {CreateMLCEngine} from "@mlc-ai/web-llm";
-import {pipeline} from '@huggingface/transformers';
 import {sleep} from "openai/core";
 
 export const useMessageStore = defineStore('messages', () => {
@@ -25,6 +24,7 @@ export const useMessageStore = defineStore('messages', () => {
   const settingStore = useSettingsStore()
   const alertStore = useAlertStore()
   const loadingStore = useLoadingStore()
+
 
   class TextGenerator {
     constructor(additionalDependencies = []) {
@@ -110,9 +110,10 @@ export const useMessageStore = defineStore('messages', () => {
           }
         }
       }
-      const selectedModel = "Hermes-3-Llama-3.2-3B-q4f32_1-MLC";
-      // const selectedModel = "Llama-3.2-3B-Instruct-q4f16_1-MLC";
-      // const selectedModel = "Llama-3.1-8B-Instruct-q4f32_1-MLC";
+      const selectedModel = settingStore.selectedLLMModel==="9b Model"
+        ? "gemma-2-9b-it-q4f16_1-MLC"
+        : "gemma-2-2b-it-q4f16_1-MLC";
+      //const selectedModel = "gemma-2-2b-it-q4f16_1-MLC";
 
       this.engine = await CreateMLCEngine(
         selectedModel,
@@ -142,7 +143,12 @@ export const useMessageStore = defineStore('messages', () => {
           messages,
         });
         console.log(completion);
-        return JSON.parse(completion.choices[0].message.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
+        console.log('the result is', completion.choices[0].message.content)
+        return JSON.parse(completion.choices[0].message.content.trim()                               
+        .replace(/(^[^[]+|[^\]]+$)/g, '')     
+        .replace(/,\s*]$/, ']')               
+        .replace(/"\s+"/g, '", "')            
+        .replace(/(?<=\{)\s*([^"]+?)\s*:/g, '"$1":'))
 
       } catch (err) {
         console.log(err)
@@ -150,53 +156,11 @@ export const useMessageStore = defineStore('messages', () => {
     }
   }
 
-  class HFTransformersImplementation extends TextGenerator {
-    constructor() {
-      super();
-      this.engine = null;
-      this.engineLoading  = false;
-    }
-
-    async setup() {
-      const initProgressCallback = (initProgress) => {
-        console.log(initProgress);
-      }
-      // Allocate pipeline
-      // this.engine = await pipeline('text-generation', 'HuggingFaceTB/SmolLM2-1.7B-Instruct');
-      this.engine = await pipeline("text-generation", "onnx-community/Llama-3.2-1B-Instruct", {
-        device: "webgpu",
-        dtype: "q8", // auto, fp32, fp16, q8, int8, uint8, q4, bnb4, q4f16
-        progress_callback: initProgressCallback,
-      });
-    }
-
-    async create(messages) {
-      try {
-        while (this.engineLoading) {
-          await sleep(100)
-        }
-        if (this.engine === null) {
-          this.engineLoading = true;
-          try {
-            console.debug("Setting up enginez")
-            await this.setup()
-          }
-          finally {
-            this.engineLoading = false;
-          }
-        }
-        console.log(messages)
-        const output = await this.engine(messages);
-        console.log(output);
-        return JSON.parse(output[0].generated_text.at(-1).content.content.replace(/(^[^[]+|[^\]]+$)/g, ''))
-
-      } catch (err) {
-        console.log(err)
-      }
-    }
-  }
-
-  const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation() HFTransformersImplementation()
+  console.log(settingStore.selectedLLMModel);
+  const chatCompletionModel = settingStore.selectedLLMModel === "OpenAI"
+    ? new OpenAIImplementation()
+    : new WebLLMImplementation();
+  //const chatCompletionModel = new WebLLMImplementation() // OpenAIImplementation() WebLLMImplementation() HFTransformersImplementation()
 
   // Respond
   async function generateSentences() {
@@ -227,7 +191,8 @@ export const useMessageStore = defineStore('messages', () => {
   // Build Sentences
   async function generateSentencesFromWords(words) {
     const command = `Given the following list of words, generate between 3-5 sentences that the assistant 
-    might be trying to say. Keep them generic but use all the words:\n${words}`
+    might be trying to say. Keep them generic but use all the words:\n${words},You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -241,7 +206,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateMoreWordsFromWords(words) {
     const command = `Given the following list of words and the Current Conversation History, generate another 
-    list of related words that the assistant could select from to build a sentence:\n${words}`
+    list of related words that the assistant could select from to build a sentence:\n${words},You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -252,7 +218,8 @@ export const useMessageStore = defineStore('messages', () => {
   // New Sentence
   async function generateWordSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a short list of key words 
-      the assistant can select from to build a new sentence, based around this new topic: '${topic}'`
+      the assistant can select from to build a new sentence, based around this new topic: '${topic}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -262,7 +229,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateSentenceSuggestionsFromNewTopic(topic) {
     const command = `Ignore all previous conversation. Generate a list of 3 to 5 short generic sentences the 
-      assistant may want to say, based around this new topic: '${topic}'`
+      assistant may want to say, based around this new topic: '${topic}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -277,7 +245,8 @@ export const useMessageStore = defineStore('messages', () => {
   // Edit Sentence
   async function editSingleResponseWithHint(response, hint) {
     const command = `The response '${response}' was close. Suggest similar sentences based on the following hint':
-    \n'${hint}'`
+    \n'${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
@@ -291,7 +260,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateWordsForSingleResponseFromHint(response, hint) {
     const command = `The response '${response}' was close. Generate a short list of key words or 
-    very short phrases the assistant can select from to build a similar sentence, based on the hint: '${hint}'`
+    very short phrases the assistant can select from to build a similar sentence, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -315,7 +285,8 @@ export const useMessageStore = defineStore('messages', () => {
   async function generateWordsForAllResponsesFromHint(hint) {
     const command = `None of those suggestions were very useful. This time, instead of full sentences, generate 
     a short list of key words or very short phrases, that the assistant can select from to build 
-    alternative sentences. Here is a hint to help guide you: '${hint}'`
+    alternative sentences. Here is a hint to help guide you: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -339,7 +310,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateWordSuggestionsFromHint(hint) {
     const command = `Given the Current Conversation History, generate a short list of key words or 
-    very short phrases the assistant can select from to build a new sentence, based on the hint: '${hint}'`
+    very short phrases the assistant can select from to build a new sentence, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getKeywordSystemMessage()},
       {role: "user", content: command}
@@ -349,7 +321,8 @@ export const useMessageStore = defineStore('messages', () => {
 
   async function generateSentenceSuggestionsFromHint(hint) {
     const command = `Given the Current Conversation History, generate a list of 3 to 5 short generic sentences the 
-      assistant may want to say, based on the hint: '${hint}'`
+      assistant may want to say, based on the hint: '${hint}',You must respond only with a valid JSON list 
+    of suggestions and NOTHING else.`
     let messages = [
       {role: "system", content: getSentenceSystemMessage()},
       {role: "user", content: command}
