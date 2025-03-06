@@ -159,7 +159,7 @@ export const useMessageStore = defineStore('messages', () => {
       }
       const selectedModel = settingStore.selectedLLMModel==="9b Model"
         ? "gemma-2-9b-it-q4f16_1-MLC"
-        : "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+        : "gemma-2-2b-it-q4f16_1-MLC";
       //const selectedModel = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 
       this.engine = await CreateMLCEngine(
