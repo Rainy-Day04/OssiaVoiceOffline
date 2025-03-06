@@ -125,11 +125,17 @@ const saveSelectedSTTModel = () => {
           <div class="group-content">
             <h3 class="subheading">Choose Speech-to-Text Model</h3>
             <v-select
-              v-model="selectedSTTModel"
-              label="Select Speech-to-Text Model"
-              :items="['Choice 1', 'Choice 2', 'Choice 3']"
-              @update:modelValue="saveSelectedSTTModel"
-            ></v-select>
+            v-model="selectedSTTModel"
+            label="Select Speech-to-Text Model"
+            :items="[
+              { text: 'Whisper Tiny (balenced)', value: 'Choice 1' },
+              { text: 'Whisper Base (performance)', value: 'Choice 2' },
+              { text: 'Whisper Small (accuracy)', value: 'Choice 3' }
+            ]"
+            item-title="text"
+            item-value="value"
+            @update:modelValue="saveSelectedSTTModel"
+          />
           </div>
 
           <!-- OpenAI API Key (Only Shows if OpenAI is Selected) -->
