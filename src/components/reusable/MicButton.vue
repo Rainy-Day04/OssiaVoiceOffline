@@ -1,77 +1,110 @@
 <script setup>
 import { ref, onMounted } from "vue";
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, AutoProcessor, AutoModelForAudioFrameClassification, read_audio } from "@huggingface/transformers";
 import micImg from '@/assets/mic-button/mic.svg';
 import micHoverImg from '@/assets/mic-button/mic-hover.svg';
 import micActiveImg from '@/assets/mic-button/mic-active.svg';
 import { useAlertStore } from "@/stores/AlertStore.js";
 import { useSettingsStore } from "@/stores/SettingsStore.js";
-import { useMicrophoneStore } from "@/stores/MicrophoneStore.js"; // Add this import
 
-// State Management
 const alertStore = useAlertStore();
 const settingsStore = useSettingsStore();
-const microphoneStore = useMicrophoneStore(); // Add this store
 
-// Reactive Variables
+// Reactive State
 const micActive = ref(false);
 const micBtnImage = ref(micImg);
 const model = defineModel();
 const currentModelName = ref('');
 const isLoading = ref(true);
 const loadProgress = ref(0);
-const isProcessing = ref(false); // New processing state
+const isProcessing = ref(false);
 const emit = defineEmits(["textAvailable"]);
 
-// Audio Recording Variables
+// Model Instances
 let transcriber = null;
+let segmentationProcessor = null;
+let segmentationModel = null;
 let mediaRecorder = null;
 let audioChunks = [];
 let audioStream = null;
 
-// Model Configuration
 const modelMap = {
   'Choice 1': 'Xenova/whisper-tiny.en',
   'Choice 2': 'Xenova/whisper-base.en',
   'Choice 3': 'Xenova/whisper-small.en'
 };
 
-// Model Initialization
+// Speaker Segmentation Processing
+/**
+ * Processes audio for speaker diarization
+ * @param {Blob} audioBlob - The recorded audio blob to process
+ * @returns {Promise<Array>} Array of speaker segments with timing information
+ */
+async function processDiarization(audioBlob) {
+  try {
+    // First, convert the blob to an ArrayBuffer
+    const audioUrld = URL.createObjectURL(audioBlob);
+
+    const processedAudio = await read_audio(audioUrld,segmentationProcessor.feature_extractor.config.sampling_rate);
+    
+    // Process the audio with the processor - this creates the input features
+    const inputs = await segmentationProcessor(processedAudio);
+    
+    // Run the model with the processed inputs
+    const { logits } = await segmentationModel(inputs);
+    
+    // Post-process to get speaker segments
+    const diarization = segmentationProcessor.post_process_speaker_diarization(
+      logits,
+      processedAudio.length
+    )[0];
+    
+    return diarization;
+  } catch (error) {
+    console.error('Diarization error:', error);
+    return [];
+  }
+}
+
 onMounted(async () => {
   try {
     isLoading.value = true;
-    microphoneStore.setLoading(true); // Update store
-    
     loadProgress.value = 10;
-    microphoneStore.setLoadProgress(10);
-    
+
     const selectedModel = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
     currentModelName.value = selectedModel;
-    microphoneStore.setCurrentModel(selectedModel);
     
     loadProgress.value = 30;
-    transcriber = await pipeline(
-      "automatic-speech-recognition",
-      selectedModel,
-      {
-        progress_callback: progress => {
-          loadProgress.value = 30 + Math.floor(progress * 70);
-          microphoneStore.setLoadProgress(30 + Math.floor(progress * 70));
-        }
+    transcriber = await pipeline("automatic-speech-recognition", selectedModel, {
+      progress_callback: progress => {
+        loadProgress.value = 30 + Math.floor(progress * 30);
       }
-    );
+    });
+
+    loadProgress.value = 60;
+    segmentationProcessor = await AutoProcessor.from_pretrained('onnx-community/pyannote-segmentation-3.0');
+    console.log('Segmentation Processor Loaded');
     
+    loadProgress.value = 80;
+    segmentationModel = await AutoModelForAudioFrameClassification.from_pretrained(
+      'onnx-community/pyannote-segmentation-3.0', 
+      { device: 'wasm', dtype: 'fp32' }
+    );
+    console.log('Segmentation Model Loaded');
+
     loadProgress.value = 100;
-    microphoneStore.setLoadProgress(100);
   } catch (error) {
     alertStore.showAlert("error", "Model Load Failed", error.message);
   } finally {
     isLoading.value = false;
-    microphoneStore.setLoading(false);
   }
 });
 
-// Audio Recording Functions
+/**
+ * Initializes audio recording from the microphone
+ * @returns {Promise<void>} Promise that resolves when recording setup is complete
+ * @throws {Error} When microphone access is denied or other errors occur
+ */
 async function startRecording() {
   try {
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -84,22 +117,57 @@ async function startRecording() {
 
     mediaRecorder.onstop = async () => {
       isProcessing.value = true;
-      microphoneStore.setProcessing(true); // Update store
-      
       try {
         const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-        const output = await transcriber(URL.createObjectURL(audioBlob));
-        
-        if (output?.text) {
-          model.value = output.text;
-          emit("textAvailable", output.text);
+        const audioUrl = URL.createObjectURL(audioBlob);
+
+        const [transcription, diarization] = await Promise.all([
+          transcriber(audioUrl, {
+            return_timestamps: 'word',
+          }),
+          processDiarization(audioBlob)
+        ]);
+
+        // Debug logging for Whisper transcription results
+        console.log('======= WHISPER TRANSCRIPTION RESULTS =======');
+        console.log('Full text:', transcription.text);
+        console.log('Number of chunks:', transcription.chunks.length);
+        console.log('First 5 chunks sample:', transcription.chunks.slice(0, 5));
+        console.log('Last 5 chunks sample:', transcription.chunks.slice(-5));
+        console.log('===========================================');
+
+        // Debug logging for pyannote-segmentation diarization results
+        console.log('======= PYANNOTE DIARIZATION RESULTS =======');
+        console.log('Number of segments:', diarization.length);
+        if (diarization.length > 0) {
+          console.log('First 5 segments:', diarization.slice(0, 5));
+          console.log('Last 5 segments:', diarization.slice(-5));
+          
+          // Calculate total duration and speaker stats
+          const totalDuration = diarization.reduce((sum, seg) => sum + (seg.end - seg.start), 0);
+          const speakerCounts = diarization.reduce((counts, seg) => {
+            counts[seg.id] = (counts[seg.id] || 0) + 1;
+            return counts;
+          }, {});
+          
+          console.log('Total audio duration from segments:', totalDuration);
+          console.log('Speaker distribution:', speakerCounts);
+        } else {
+          console.log('No diarization segments found!');
         }
+        console.log('===========================================');
+
+        const validSegments = preprocessDiarization(diarization);
+        console.log('After preprocessing:', validSegments.length, 'valid segments');
+        
+        const mergedResults = mergeResults(transcription, diarization, audioBlob);
+        model.value = mergedResults.formattedText;
+        emit("textAvailable", mergedResults);
       } catch (error) {
-        alertStore.showAlert("error", "Transcription Failed", error.message);
+        alertStore.showAlert("error", "Processing Failed", error.message);
       } finally {
         cleanup();
         isProcessing.value = false;
-        microphoneStore.setProcessing(false); // Update store
       }
     };
 
@@ -110,12 +178,147 @@ async function startRecording() {
   }
 }
 
+// Helper Functions
+/**
+ * Filters and enhances diarization segments
+ * @param {Array} diarization - Raw diarization segments from model
+ * @returns {Array} Filtered and processed diarization segments
+ */
+function preprocessDiarization(diarization) {
+  return diarization
+    .filter(segment => segment.end - segment.start >= 0.5)
+    .map(segment => ({
+      ...segment,
+      label: segment.label || `Speaker_${segment.id}`
+    }));
+}
+
+/**
+ * Merges transcription and diarization results
+ * @param {Object} transcription - Whisper transcription result
+ * @param {Array} diarization - Speaker diarization segments
+ * @param {Blob} audioBlob - Original audio blob
+ * @returns {Object} Combined results with formatted text and segments
+ */
+function mergeResults(transcription, diarization, audioBlob) {
+  const validSegments = preprocessDiarization(diarization);
+
+  const formattedSegments = transcription.chunks.reduce((acc, chunk) => {
+    const speaker = findOptimalSpeaker(chunk.timestamp, validSegments);
+    return mergeSegments(acc, chunk, speaker);
+  }, []);
+
+  return {
+    formattedText: generateReadableText(formattedSegments),
+    segments: formattedSegments,
+    rawData: { diarization, transcription }
+  };
+}
+
+/**
+ * Finds the most appropriate speaker for a given time chunk
+ * @param {Array} timestamp - [start, end] timestamps for the chunk
+ * @param {Array} segments - Available speaker segments
+ * @returns {string} Speaker label for the chunk
+ */
+function findOptimalSpeaker([start, end], segments) {
+  // Case 1: Find segments that completely contain this chunk
+  const containingSegments = segments.filter(
+    segment => segment.start <= start && segment.end >= end
+  );
+  
+  if (containingSegments.length === 1) {
+    return containingSegments[0].label;
+  }
+  
+  if (containingSegments.length > 1) {
+    // If multiple segments contain this chunk, use the one with highest confidence
+    return containingSegments.reduce((best, current) => 
+      current.confidence > best.confidence ? current : best
+    ).label;
+  }
+  
+  // Case 2: Find segments with meaningful overlap
+  const overlapThreshold = 0.5; // 50% overlap required
+  const chunkDuration = end - start;
+  
+  const overlappingSegments = segments.filter(segment => {
+    const overlapStart = Math.max(start, segment.start);
+    const overlapEnd = Math.min(end, segment.end);
+    const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+    return overlapDuration / chunkDuration >= overlapThreshold;
+  });
+  
+  if (overlappingSegments.length > 0) {
+    // Use the segment with highest confidence among overlapping ones
+    return overlappingSegments.reduce((best, current) => 
+      current.confidence > best.confidence ? current : best
+    ).label;
+  }
+  
+  // Case 3: Fall back to midpoint distance method
+  const chunkMid = (start + end) / 2;
+  let bestMatch = null;
+  let minDistance = Infinity;
+
+  for (const segment of segments) {
+    const segmentMid = (segment.start + segment.end) / 2;
+    const distance = Math.abs(segmentMid - chunkMid);
+    
+    if (distance < minDistance) {
+      minDistance = distance;
+      bestMatch = segment;
+    }
+  }
+
+  return bestMatch?.label || 'Speaker';
+}
+
+/**
+ * Merges consecutive segments from the same speaker
+ * @param {Array} acc - Accumulated segments
+ * @param {Object} chunk - Current chunk to process
+ * @param {string} speaker - Speaker label
+ * @returns {Array} Updated segments array
+ */
+function mergeSegments(acc, chunk, speaker) {
+  const last = acc[acc.length - 1];
+  const newSegment = {
+    start: chunk.timestamp[0],
+    end: chunk.timestamp[1],
+    text: chunk.text.trim(),
+    speaker
+  };
+
+  if (last && last.speaker === speaker && (chunk.timestamp[0] - last.end < 1.5)) {
+    last.text += ` ${newSegment.text}`;
+    last.end = newSegment.end;
+    return acc;
+  }
+  return [...acc, newSegment];
+}
+
+/**
+ * Generates human-readable text from processed segments
+ * @param {Array} segments - Speaker segments with text
+ * @returns {string} Formatted text with speaker labels
+ */
+function generateReadableText(segments) {
+  return segments.map(s => `${s.speaker}: ${s.text}`).join('\n');
+}
+
+/**
+ * Stops the active recording session
+ */
 function stopRecording() {
   if (mediaRecorder?.state === "recording") {
     mediaRecorder.stop();
   }
 }
 
+/**
+ * Cleans up recording resources and resets UI state
+ */
 function cleanup() {
   if (audioStream) {
     audioStream.getTracks().forEach(track => track.stop());
@@ -124,24 +327,32 @@ function cleanup() {
   mediaRecorder = null;
   audioChunks = [];
   micActive.value = false;
-  microphoneStore.setActive(false); // Update store
   micBtnImage.value = micImg;
 }
 
 // UI Interactions
+/**
+ * Handles mouse hover effect on the microphone button
+ */
 const micHover = () => !micActive.value && (micBtnImage.value = micHoverImg);
+
+/**
+ * Handles mouse unhover effect on the microphone button
+ */
 const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
 
+/**
+ * Handles microphone button click events
+ * Toggles recording state and manages audio capture
+ */
 const micClick = async () => {
   try {
     if (!micActive.value && !isLoading.value) {
       micActive.value = true;
-      microphoneStore.setActive(true); // Update store
       micBtnImage.value = micActiveImg;
       await startRecording();
     } else {
       micActive.value = false;
-      microphoneStore.setActive(false); // Update store
       micBtnImage.value = micImg;
       stopRecording();
     }
@@ -298,3 +509,4 @@ const micClick = async () => {
   cursor: not-allowed;
 }
 </style>
+
