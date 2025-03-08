@@ -99,7 +99,6 @@ senses pity.
     localStorage.setItem('cookieAgreement', cookieAgreement.value.toString())
     showSettingsWarning.value = false
     console.log('settings saved')
-    console.log(selectedLLMModel.value);
   }
 
   watch(context, async (newContext) => {
