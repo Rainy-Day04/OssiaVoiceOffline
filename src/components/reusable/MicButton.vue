@@ -94,7 +94,7 @@ onMounted(async () => {
 
     loadProgress.value = 100;
   } catch (error) {
-    alertStore.showAlert("error", "Model Load Failed", error.message);
+    alertStore.showAlert("error", "Model load failed. Please check your internet connection or switch to Google Chrome if you are using Edge.", error.message);
   } finally {
     isLoading.value = false;
   }
