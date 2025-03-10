@@ -109,17 +109,17 @@ const handleError = (context, error) => {
  * Initialize component, load speech recognition model and worker
  */
 onMounted(async () => {
-  const selectedModel = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
+  const selectedModel_full = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
 
   try {
     isLoading.value = true;
     loadProgress.value = 10;
     
-    currentModelName.value = selectedModel;
+    currentModelName.value = selectedModel_full ;
     loadProgress.value = 30;
     transcriber = await pipeline(
       "automatic-speech-recognition",
-      selectedModel,
+      selectedModel_full ,
     );
   } catch (error) {
     alertStore.showAlert("error", "Model Load Failed", error.message);
