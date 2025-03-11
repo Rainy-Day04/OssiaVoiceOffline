@@ -187,6 +187,7 @@ async function startRecording() {
 function preprocessDiarization(diarization) {
   return diarization
     .filter(segment => segment.end - segment.start >= 0.5)
+    .filter(segment => segment.confidence >= 0.8)
     .map(segment => ({
       ...segment,
       label: segment.label || `Speaker_${segment.id}`
