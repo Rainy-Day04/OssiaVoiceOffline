@@ -132,8 +132,6 @@ async function startRecording() {
         console.log('======= WHISPER TRANSCRIPTION RESULTS =======');
         console.log('Full text:', transcription.text);
         console.log('Number of chunks:', transcription.chunks.length);
-        console.log('First 5 chunks sample:', transcription.chunks.slice(0, 5));
-        console.log('Last 5 chunks sample:', transcription.chunks.slice(-5));
         console.log('===========================================');
 
         // Debug logging for pyannote-segmentation diarization results
@@ -160,7 +158,7 @@ async function startRecording() {
         const validSegments = preprocessDiarization(diarization);
         console.log('After preprocessing:', validSegments.length, 'valid segments');
         
-        const mergedResults = mergeResults(transcription, diarization, audioBlob);
+        const mergedResults = mergeResults(transcription, diarization);
         model.value = mergedResults.formattedText;
         emit("textAvailable", mergedResults);
       } catch (error) {
@@ -201,7 +199,7 @@ function preprocessDiarization(diarization) {
  * @param {Blob} audioBlob - Original audio blob
  * @returns {Object} Combined results with formatted text and segments
  */
-function mergeResults(transcription, diarization, audioBlob) {
+function mergeResults(transcription, diarization) {
   const validSegments = preprocessDiarization(diarization);
 
   const formattedSegments = transcription.chunks.reduce((acc, chunk) => {
@@ -227,7 +225,6 @@ function findOptimalSpeaker([start, end], segments) {
   const containingSegments = segments.filter(
     segment => segment.start <= start && segment.end >= end
   );
-  
   if (containingSegments.length === 1) {
     return containingSegments[0].label;
   }
@@ -330,7 +327,6 @@ function cleanup() {
   micActive.value = false;
   micBtnImage.value = micImg;
 }
-
 // UI Interactions
 /**
  * Handles mouse hover effect on the microphone button
@@ -341,7 +337,6 @@ const micHover = () => !micActive.value && (micBtnImage.value = micHoverImg);
  * Handles mouse unhover effect on the microphone button
  */
 const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
-
 /**
  * Handles microphone button click events
  * Toggles recording state and manages audio capture
@@ -445,6 +440,7 @@ const micClick = async () => {
   align-items: center;
   justify-content: center;
   z-index: 2000;
+  cursor: not-allowed;
 }
 
 .processing-spinner {
