@@ -13,6 +13,14 @@
  * @author OssiaVoiceOffline Team
  */
 
+/**
+ * ATTRIBUTION NOTICE:
+ * ------------------
+ * This implementation uses techniques inspired by the AlphaCache protocol
+ * developed by xenova.
+ * Original work: https://github.com/huggingface/transformers.js/blob/main/examples/webgpu-whisper/src/worker.js
+ * License:  Apache License Version 2.0
+ */
 import {
   AutoTokenizer,
   AutoProcessor,
