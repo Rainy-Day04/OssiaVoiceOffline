@@ -237,7 +237,7 @@ function findOptimalSpeaker([start, end], segments) {
   }
   
   // Case 2: Find segments with meaningful overlap
-  const overlapThreshold = 0.5; // 50% overlap required
+  const overlapThreshold = 0.35; 
   const chunkDuration = end - start;
   
   const overlappingSegments = segments.filter(segment => {
@@ -248,7 +248,6 @@ function findOptimalSpeaker([start, end], segments) {
   });
   
   if (overlappingSegments.length > 0) {
-    // Use the segment with highest confidence among overlapping ones
     return overlappingSegments.reduce((best, current) => 
       current.confidence > best.confidence ? current : best
     ).label;
@@ -302,7 +301,7 @@ function mergeSegments(acc, chunk, speaker) {
  * @returns {string} Formatted text with speaker labels
  */
 function generateReadableText(segments) {
-  return segments.map(s => `${s.speaker}: ${s.text}`).join('\n');
+  return segments.map(s => `${s.speaker}: ${s.text}`).join('\n\n');
 }
 
 /**
