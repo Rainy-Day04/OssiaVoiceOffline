@@ -181,7 +181,7 @@ onMounted(async () => {
       if (isLoading.value) handleError("Initialization timeout", new Error("Model loading took too long, exceeded 60 seconds"));
     }, 60000);
 
-    const selectedModel = 'onnx-community/whisper-base';
+    const selectedModel = 'onnx-community/whisper-tiny';
     worker.postMessage({ 
       type: 'load',
       data: { modelId: selectedModel }
