@@ -62,7 +62,7 @@ class AutomaticSpeechRecognitionPipeline {
    * @returns {Promise<Array>} Promise resolving to [tokenizer, processor, model]
    */
   static async getInstance(progress_callback = null) {
-      this.model_id = 'onnx-community/whisper-base';
+      this.model_id = 'onnx-community/whisper-tiny';
 
       this.tokenizer ??= AutoTokenizer.from_pretrained(this.model_id, {
           progress_callback,

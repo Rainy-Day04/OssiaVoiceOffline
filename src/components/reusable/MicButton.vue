@@ -110,7 +110,7 @@ const handleError = (context, error) => {
  */
 onMounted(async () => {
   const selectedModel_full = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
-
+  model.value = '';
   try {
     isLoading.value = true;
     loadProgress.value = 10;
@@ -131,7 +131,6 @@ onMounted(async () => {
     worker = new Worker(new URL('@/workers/whisper-worker.js?worker&inline', import.meta.url), {
       type: 'module'
     });
-
     worker.onmessage = (e) => {
       console.log(`[Main] Received message: ${e.data.status}`, e.data);
       try {
@@ -150,12 +149,7 @@ onMounted(async () => {
             break;
           case 'update':
             isProcessing.value = true;
-            if (e.data.output) {
-              const filteredText = filterText(e.data.output);
-              if (filteredText) {
-                throttledUpdate(filteredText);
-              }
-              
+            if (e.data.output) {   
               if (e.data.tps) {
                 processingSpeed.value = e.data.tps;
               }
@@ -164,20 +158,9 @@ onMounted(async () => {
           case 'complete': {
             const finalText = e.data.output && Array.isArray(e.data.output) ? 
               e.data.output[0] : e.data.output || '';
-            
             const filteredFinal = filterText(finalText);
             console.log(`[Main] Complete result: "${filteredFinal}"`);
-            
-            const filteredPartial = filterText(partialResult.value);
-            if (filteredPartial) {
-              accumulatedText.value += filteredPartial + ' ';
-            }
-            partialResult.value = '';
-            
-            if (model !== undefined) {
-              model.value = accumulatedText.value.replace(/\s+/g, ' ').trim();
-            }
-            
+            throttledUpdate(filteredFinal);
             setTimeout(() => {
               isProcessing.value = false;
             }, 1000);
@@ -235,9 +218,28 @@ async function startRecording() {
     });
 
     mediaStreamSource = audioContext.createMediaStreamSource(audioStream);
+    
+    // Implement dynamic range compression as noise gate
+    const noiseGate = audioContext.createDynamicsCompressor();
+    noiseGate.threshold.value = -50; // Signal threshold in dB (-50dB targets speech while attenuating ambient noise)
+    noiseGate.knee.value = 40;       // Transition range in dB for smooth compression curve
+    noiseGate.ratio.value = 12;      // Compression ratio of 12:1 for effective noise reduction
+    noiseGate.attack.value = 0.003;  // Attack time in seconds (3ms) for responsive onset detection
+    noiseGate.release.value = 0.25;  // Release time in seconds (250ms) for natural decay characteristics
+    
+    // Apply spectral filtering via low-pass filter
+    const lowPassFilter = audioContext.createBiquadFilter();
+    lowPassFilter.type = 'lowpass';
+    lowPassFilter.frequency.value = 8000; // Cutoff frequency at 8kHz preserves speech harmonics while reducing high-frequency noise
+    
+    // Configure audio processing signal chain
+    mediaStreamSource.connect(noiseGate);
+    noiseGate.connect(lowPassFilter);
+    
     scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
-
-    mediaStreamSource.connect(scriptProcessor);
+    
+    // Route processed audio through scriptProcessor for analysis
+    lowPassFilter.connect(scriptProcessor);
     scriptProcessor.connect(audioContext.destination);
 
     audioBuffers = [];
@@ -324,20 +326,11 @@ async function stopRecording() {
         try {
           console.log("[Main] Processing complete audio with pipeline...");
           isProcessing_normalpipeline.value = true;
-          
           const result = await transcriber(fullAudio);
-          
           const finalText = filterText(result.text || '');
           console.log(`[Main] Pipeline complete result: "${finalText}"`);
-          
           model.value = finalText;
-          
-          emit("textAvailable", {
-            text: finalText,
-            audio: fullAudio,
-            sampleRate: WHISPER_SR
-          });
-          
+          emit("textAvailable");
           isProcessing_normalpipeline.value = false;
         } catch (error) {
           handleError("Complete audio processing failed", error);
@@ -348,17 +341,7 @@ async function stopRecording() {
           type: 'finalize',
           data: { fullAudio }
         });
-        
-        if (accumulatedText.value) {
-          const cleanText = accumulatedText.value.replace(/\s+/g, ' ').trim();
-          model.value = cleanText;
-          
-          emit("textAvailable", {
-            text: cleanText,
-            audio: fullAudio,
-            sampleRate: WHISPER_SR
-          });
-        }
+        emit("textAvailable");
       }
     }
     
@@ -426,7 +409,12 @@ const micClick = async () => {
 const throttledUpdate = throttle((text) => {
   if (!text) return;
   
-  partialResult.value = text;
+  if (partialResult.value !== text) {
+    if (partialResult.value) {
+      accumulatedText.value += partialResult.value + ' ';
+    }
+    partialResult.value = text;
+  }
   
   if (model !== undefined) {
     model.value = accumulatedText.value + text;
