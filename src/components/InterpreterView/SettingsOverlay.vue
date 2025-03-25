@@ -1,4 +1,4 @@
-<script setup>
+k<script setup>
 import { useSettingsStore } from "@/stores/SettingsStore.js";
 import { onMounted, ref } from "vue";
 
@@ -128,7 +128,7 @@ const saveSelectedSTTModel = () => {
             v-model="selectedSTTModel"
             label="Select Speech-to-Text Model"
             :items="[
-              { text: 'Whisper Tiny (balanced)', value: 'Choice 1' },
+              { text: 'Whisper Tiny (peak performance)', value: 'Choice 1' },
               { text: 'Whisper Base (performance)', value: 'Choice 2' },
               { text: 'Whisper Small (accuracy)', value: 'Choice 3' }
             ]"
