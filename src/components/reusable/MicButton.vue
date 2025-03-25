@@ -202,6 +202,7 @@ async function startRecording() {
     console.group('[Main] Start recording');
     accumulatedText.value = ''
     model.value = '';
+    partialResult.value = '';
     completeAudioData = [];
     
     audioStream = await navigator.mediaDevices.getUserMedia({ 
