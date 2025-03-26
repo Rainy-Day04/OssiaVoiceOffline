@@ -22,12 +22,12 @@ export default async function speak(text) {
   // Base Model for TTS
   // const response = await fetch('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin');
 
-  // const speaker_embeddings_data = new Float32Array(
-  //   await (await fetch('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin')).arrayBuffer()
-  // );
   const speaker_embeddings_data = new Float32Array(
-    await (await fetch('/custom_speaker_embedding_single.bin')).arrayBuffer()
+    await (await fetch('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin')).arrayBuffer()
   );
+  // const speaker_embeddings_data = new Float32Array(
+  //   await (await fetch('/custom_speaker_embedding_single.bin')).arrayBuffer()
+  // );
   const speaker_embeddings = new Tensor(
       'float32',
       speaker_embeddings_data,
