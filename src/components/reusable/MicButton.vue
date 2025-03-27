@@ -47,13 +47,10 @@ async function processDiarization(audioBlob) {
 
     const processedAudio = await read_audio(audioUrld,segmentationProcessor.feature_extractor.config.sampling_rate);
     
-    // Process the audio with the processor - this creates the input features
     const inputs = await segmentationProcessor(processedAudio);
-    
-    // Run the model with the processed inputs
+
     const { logits } = await segmentationModel(inputs);
     
-    // Post-process to get speaker segments
     const diarization = segmentationProcessor.post_process_speaker_diarization(
       logits,
       processedAudio.length
@@ -70,7 +67,7 @@ onMounted(async () => {
   try {
     isLoading.value = true;
     loadProgress.value = 10;
-
+    // Load the selected STT model
     const selectedModel = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
     currentModelName.value = selectedModel;
     
@@ -80,7 +77,7 @@ onMounted(async () => {
         loadProgress.value = 30 + Math.floor(progress * 30);
       }
     });
-
+    // Load the speaker segmentation model
     loadProgress.value = 60;
     segmentationProcessor = await AutoProcessor.from_pretrained('onnx-community/pyannote-segmentation-3.0');
     console.log('Segmentation Processor Loaded');
@@ -180,7 +177,7 @@ async function startRecording() {
 /**
  * Filters and enhances diarization segments
  * @param {Array} diarization - Raw diarization segments from model
- * @returns {Array} Filtered and processed diarization segments
+ * @returns {Array} Filtered (confidence >= 0.8) and processed diarization segments
  */
 function preprocessDiarization(diarization) {
   return diarization
@@ -196,7 +193,6 @@ function preprocessDiarization(diarization) {
  * Merges transcription and diarization results
  * @param {Object} transcription - Whisper transcription result
  * @param {Array} diarization - Speaker diarization segments
- * @param {Blob} audioBlob - Original audio blob
  * @returns {Object} Combined results with formatted text and segments
  */
 function mergeResults(transcription, diarization) {
