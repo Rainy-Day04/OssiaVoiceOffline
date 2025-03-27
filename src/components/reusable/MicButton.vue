@@ -226,6 +226,7 @@ function findOptimalSpeaker([start, end], segments) {
   }
   
   if (containingSegments.length > 1) {
+    console.log('Mode1:', containingSegments.length);
     // If multiple segments contain this chunk, use the one with highest confidence
     return containingSegments.reduce((best, current) => 
       current.confidence > best.confidence ? current : best
@@ -240,6 +241,7 @@ function findOptimalSpeaker([start, end], segments) {
     const overlapStart = Math.max(start, segment.start);
     const overlapEnd = Math.min(end, segment.end);
     const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+    console.log('Mode2:', overlapDuration);
     return overlapDuration / chunkDuration >= overlapThreshold;
   });
   
@@ -262,8 +264,9 @@ function findOptimalSpeaker([start, end], segments) {
       minDistance = distance;
       bestMatch = segment;
     }
+    
   }
-
+  console.log('Mode3:', minDistance);
   return bestMatch?.label || 'Speaker';
 }
 
