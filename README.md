@@ -18,7 +18,7 @@ Experience it for yourself at [ossiavoice.com](https://ossiavoice.com/)
   Any contributor, by adding to or adapting the contents of this repository, accepts that the original author (@arneyjfs) retains full ownership over it's contents
 
 # To run the program:
-
+First you need to install Node.js from https://nodejs.org/en
 1.For standard version:
 1. git clone https://github.com/Rainy-Day04/OssiaVoiceOffline.git
 2. cd OssiaVoiceOffline
