@@ -220,20 +220,47 @@ async function startRecording() {
 
     mediaStreamSource = audioContext.createMediaStreamSource(audioStream);
     
-    // Implement dynamic range compression as noise gate
+    /**
+     * Creating our "virtual sound engineer" to clean up voice recordings
+     * 
+     * First, we set up a noise gate (like what radio DJs use) that helps
+     * separate your voice from background noise. It works by:
+     * - Setting a "noise floor" at -50dB (quiet enough to catch normal speech)
+     * - Using a gentle transition curve (40dB) so your voice sounds natural
+     * - Applying strong reduction (12:1) to background noises like fans or AC
+     * - Responding quickly (3ms) to catch the start of words
+     * - Fading out naturally (250ms) like a human ear would expect
+     */
     const noiseGate = audioContext.createDynamicsCompressor();
-    noiseGate.threshold.value = -50; // Signal threshold in dB (-50dB targets speech while attenuating ambient noise)
-    noiseGate.knee.value = 40;       // Transition range in dB for smooth compression curve
-    noiseGate.ratio.value = 12;      // Compression ratio of 12:1 for effective noise reduction
-    noiseGate.attack.value = 0.003;  // Attack time in seconds (3ms) for responsive onset detection
-    noiseGate.release.value = 0.25;  // Release time in seconds (250ms) for natural decay characteristics
-    
-    // Apply spectral filtering via low-pass filter
+    noiseGate.threshold.value = -50;
+    noiseGate.knee.value = 40;     
+    noiseGate.ratio.value = 12;    
+    noiseGate.attack.value = 0.003;
+    noiseGate.release.value = 0.25;
+
+    /**
+     * Next, we add a "tone filter" that focuses on the frequencies of human speech
+     * 
+     * Think of this like adjusting the treble knob on your stereo. We're keeping
+     * frequencies below 8kHz (where your voice lives) and reducing higher sounds
+     * (like hissing, static, or that annoying high-pitched whine from electronics).
+     * This makes your voice clearer to the AI, just like it would be easier for a
+     * friend to hear you in a noisy café if they could filter out the espresso machine.
+     */
     const lowPassFilter = audioContext.createBiquadFilter();
     lowPassFilter.type = 'lowpass';
-    lowPassFilter.frequency.value = 8000; // Cutoff frequency at 8kHz preserves speech harmonics while reducing high-frequency noise
-    
-    // Configure audio processing signal chain
+    lowPassFilter.frequency.value = 8000;
+
+    /**
+     * Finally, we connect everything together like a recording studio signal chain
+     * 
+     * Your voice flows through each processor in sequence:
+     * 1. Raw microphone input (your actual voice)
+     * 2. Through the noise gate (removes background sounds)
+     * 3. Through the tone filter (focuses on speech frequencies)
+     * 
+     * It's like having a personal sound engineer clean up your audio in real-time!
+     */
     mediaStreamSource.connect(noiseGate);
     noiseGate.connect(lowPassFilter);
     
