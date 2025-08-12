@@ -1,8 +1,8 @@
 <script setup>
-import {AlertStore} from "@/stores/AlertStore";
+import {useAlertStore} from "@/stores/AlertStore.js";
 import {computed} from "vue";
 
-const alertStore = AlertStore();
+const alertStore = useAlertStore();
 
 const color = computed(() => {
   if (alertStore.level === 'success') {
@@ -13,6 +13,7 @@ const color = computed(() => {
     return '#ff9e37'
   }
 })
+
 
 const icon = computed(() => {
   if (alertStore.level === 'success') {

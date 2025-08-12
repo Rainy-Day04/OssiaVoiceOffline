@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import {useLoadingStore} from "@/stores/LoadingStore.js";
 import {useSettingsStore} from "@/stores/SettingsStore.js";
-import {AlertStore} from "@/stores/AlertStore.js";
+import {useAlertStore} from "@/stores/AlertStore.js";
 
 const model = "gpt-4o" // "gpt-4-turbo"
 
@@ -9,7 +9,7 @@ export async function getResponse(messageHistory, command, wordLoading = false,
                                   sentenceLoading = false) {
   const loadingStore = useLoadingStore()
   const settingStore = useSettingsStore()
-  const alertStore = AlertStore()
+  const alertStore = useAlertStore()
 
   console.log('API', settingStore.openAIAPIKey)
   if (!(settingStore.openAIAPIKey && settingStore.backstory && settingStore.liabilityAgreement)) {
@@ -18,6 +18,7 @@ export async function getResponse(messageHistory, command, wordLoading = false,
     return
   }
 
+  
   let client = new OpenAI({
     apiKey: settingStore.openAIAPIKey, dangerouslyAllowBrowser: true
   });
