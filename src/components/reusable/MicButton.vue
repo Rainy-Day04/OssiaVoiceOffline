@@ -5,14 +5,16 @@ import micHoverImg from '@/assets/mic-button/mic-hover.svg';
 import micActiveImg from '@/assets/mic-button/mic-active.svg';
 import { useAlertStore } from "@/stores/AlertStore.js";
 import { useSettingsStore } from "@/stores/SettingsStore.js";
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, AutoProcessor, AutoModelForAudioFrameClassification, read_audio } from "@huggingface/transformers";
 
+let segmentationProcessor = null;
+let segmentationModel = null;
 
 /**
- * Limits the rate at which a function can fire
- * @param {Function} func - The function to throttle
- * @param {number} limit - Time limit in milliseconds
- * @returns {Function} - Throttled function
+ * Throttle: limit the rate at which a function can execute.
+ * @param {Function} func
+ * @param {number} limit - milliseconds
+ * @returns {Function}
  */
 function throttle(func, limit) {
   let lastFunc;
@@ -36,24 +38,241 @@ function throttle(func, limit) {
 }
 
 /**
- * Removes unwanted markers from transcription text
- * @param {string} text - Raw transcription text
- * @returns {string} - Cleaned text
+ * Preprocess diarization segments: drop very short/low-confidence segments
+ * and ensure a label exists.
+ * @param {Array} diarization
+ * @returns {Array}
+ */
+function preprocessDiarization(diarization) {
+  return diarization
+    .filter(segment => segment.end - segment.start >= 0.5)
+    .filter(segment => segment.confidence >= 0.8)
+    .map(segment => ({
+      ...segment,
+      label: segment.label || `Speaker_${segment.id}`
+    }));
+}
+
+/**
+ * Merge transcription chunks with diarization segments to produce
+ * speaker-attributed text and merged segments.
+ * @param {Object} transcription
+ * @param {Array} diarization
+ * @returns {{formattedText: string, segments: Array, rawData: Object}}
+ */
+function mergeResults(transcription, diarization) {
+  const validSegments = preprocessDiarization(diarization);
+
+  const formattedSegments = transcription.chunks.reduce((acc, chunk) => {
+    const speaker = findOptimalSpeaker(chunk.timestamp, validSegments);
+    return mergeSegments(acc, chunk, speaker);
+  }, []);
+
+  return {
+    formattedText: generateReadableText(formattedSegments),
+    segments: formattedSegments,
+    rawData: { diarization, transcription }
+  };
+}
+
+/**
+ * Choose a speaker label for a transcription chunk using a
+ * containment → overlap → midpoint heuristic cascade.
+ * @param {[number, number]} timestamp
+ * @param {Array} segments
+ * @returns {string}
+ */
+function findOptimalSpeaker([start, end], segments) {
+  // Mode 1: segments that fully contain the chunk
+  const containingSegments = segments.filter(
+    segment => segment.start <= start && segment.end >= end
+  );
+  if (containingSegments.length === 1) {
+    return containingSegments[0].label;
+  }
+  if (containingSegments.length > 1) {
+    return containingSegments.reduce((best, current) => 
+      current.confidence > best.confidence ? current : best
+    ).label;
+  }
+  
+  // Mode 2: segments with strong overlap (≥ threshold of the chunk duration)
+  const overlapThreshold = 0.65; 
+  const chunkDuration = end - start;
+  
+  const overlappingSegments = segments.filter(segment => {
+    const overlapStart = Math.max(start, segment.start);
+    const overlapEnd = Math.min(end, segment.end);
+    const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+    return overlapDuration / chunkDuration >= overlapThreshold;
+  });
+  
+  if (overlappingSegments.length > 0) {
+    return overlappingSegments.reduce((best, current) => 
+      current.confidence > best.confidence ? current : best
+    ).label;
+  }
+  
+  // Mode 3: closest midpoint
+  const chunkMid = (start + end) / 2;
+  let bestMatch = null;
+  let minDistance = Infinity;
+
+  for (const segment of segments) {
+    const segmentMid = (segment.start + segment.end) / 2;
+    const distance = Math.abs(segmentMid - chunkMid);
+    if (distance < minDistance) {
+      minDistance = distance;
+      bestMatch = segment;
+    }
+  }
+  return bestMatch?.label || 'Speaker';
+}
+
+/**
+ * Merge adjacent chunks from the same speaker if they are close in time.
+ * @param {Array} acc
+ * @param {{timestamp:[number,number], text:string}} chunk
+ * @param {string} speaker
+ * @returns {Array}
+ */
+function mergeSegments(acc, chunk, speaker) {
+  const last = acc[acc.length - 1];
+  const newSegment = {
+    start: chunk.timestamp[0],
+    end: chunk.timestamp[1],
+    text: chunk.text.trim(),
+    speaker
+  };
+
+  if (last && last.speaker === speaker && (chunk.timestamp[0] - last.end < 1.5)) {
+    last.text += ` ${newSegment.text}`;
+    last.end = newSegment.end;
+    return acc;
+  }
+  return [...acc, newSegment];
+}
+
+/**
+ * Render readable speaker-attributed text.
+ * @param {Array} segments
+ * @returns {string}
+ */
+function generateReadableText(segments) {
+  return segments.map(s => `${s.speaker}: ${s.text}`).join('\n\n');
+}
+
+/**
+ * Run segmentation/diarization on an audio Blob using Transformers.js pyannote model.
+ * @param {Blob} audioBlob
+ * @returns {Promise<Array>}
+ */
+async function processDiarization(audioBlob) {
+  try {
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const processedAudio = await read_audio(
+      audioUrl,
+      segmentationProcessor.feature_extractor.config.sampling_rate
+    );
+    const inputs = await segmentationProcessor(processedAudio);
+    const { logits } = await segmentationModel(inputs);
+    const diarization = segmentationProcessor.post_process_speaker_diarization(
+      logits,
+      processedAudio.length
+    )[0];
+    return diarization;
+  } catch (error) {
+    console.error('Diarization error:', error);
+    return [];
+  }
+}
+
+/**
+ * Remove known markers/tokens from partial results.
+ * @param {string} text
+ * @returns {string}
  */
 function filterText(text) {
   if (!text) return '';
   return text.replace(/\[BLANK_AUDIO\]/g, '').trim();
 }
 
-/** Sample rate for Whisper model audio processing */
+/** ------------------------ Streaming + audio constants ------------------------ */
+
 const WHISPER_SR = 16000;
+
+/**
+ * Sliding window buffer to maintain recent audio context for streaming transcription.
+ * Keeps the last WINDOW_SECONDS of audio for better accuracy.
+ */
+const WINDOW_SECONDS = 60;
+const MAX_WINDOW_SAMPLES = WHISPER_SR * WINDOW_SECONDS;
+let windowChunks = [];
+let windowSamples = 0;
+
+/**
+ * Push a new PCM chunk into the sliding window; evict old data beyond the window size.
+ * @param {Float32Array} chunk
+ */
+function pushIntoWindow(chunk) {
+  windowChunks.push(chunk);
+  windowSamples += chunk.length;
+
+  while (windowSamples > MAX_WINDOW_SAMPLES && windowChunks.length) {
+    const head = windowChunks[0];
+    const overflow = windowSamples - MAX_WINDOW_SAMPLES;
+
+    if (head.length <= overflow) {
+      windowChunks.shift();
+      windowSamples -= head.length;
+    } else {
+      const kept = head.subarray(overflow);
+      windowChunks[0] = kept;
+      windowSamples = MAX_WINDOW_SAMPLES;
+      break;
+    }
+  }
+}
+
+/**
+ * Collect the last N samples from the sliding window.
+ * @param {number} lastNSamples
+ * @returns {Float32Array}
+ */
+function getLastSamples(lastNSamples) {
+  if (windowChunks.length === 0) return new Float32Array(0);
+
+  const need = Math.min(lastNSamples, windowSamples);
+  const out = new Float32Array(need);
+
+  let remaining = need;
+  let writePos = need;
+
+  for (let i = windowChunks.length - 1; i >= 0 && remaining > 0; i--) {
+    const buf = windowChunks[i];
+    const take = Math.min(buf.length, remaining);
+    writePos -= take;
+    out.set(buf.subarray(buf.length - take), writePos);
+    remaining -= take;
+  }
+  return out;
+}
+
+/** Reset the sliding window. */
+function resetWindow() {
+  windowChunks = [];
+  windowSamples = 0;
+}
+
+/** ------------------------ Global state & stores ------------------------ */
+
 const alertStore = useAlertStore();
 const settingsStore = useSettingsStore();
 
-/** Two-way binding for transcription result */
+/** Two-way bound output text for the parent component. */
 const model = defineModel();
 
-// State management
+/** UI/state refs */
 const micActive = ref(false);
 const micBtnImage = ref(micImg);
 const currentModelName = ref('');
@@ -63,26 +282,41 @@ const isProcessing = ref(false);
 const isProcessing_normalpipeline = ref(false);
 let transcriber = null;
 const partialResult = ref('');
-const accumulatedText = ref(''); 
+const accumulatedText = ref('');
 const processingSpeed = ref(0);
-/** Emit transcription result with audio data */
-const emit = defineEmits(["textAvailable"]);
 
-// Audio processing resources
+/** Emit events to parent */
+const emit = defineEmits(["textAvailable", "audioProcessingComplete"]);
+
+/** Audio/worker resources */
 let audioContext = null;
 let mediaStreamSource = null;
-let scriptProcessor = null;
+let scriptProcessor = null; // Note: ScriptProcessorNode is deprecated; consider AudioWorklet in future.
 let audioStream = null;
 let worker = null;
 let initTimeout = null;
-let audioBuffers = [];
 let lastSendTime = 0;
-const BUFFER_SEND_INTERVAL = 1000;
+const BUFFER_SEND_INTERVAL = 300; // ms
 
-/** Stores complete audio recording for final processing */
+/** Keep the entire session audio for final high-quality pass. */
 let completeAudioData = [];
 
-/** Available speech recognition models */
+/** Auto-stop recording feature variables */
+let silenceStartTime = null;
+let lastTranscribedText = '';
+const AUTO_STOP_RMS_THRESHOLD = 0.01; // RMS threshold for silence detection
+let isStoppingRecording = false; // Flag to prevent race conditions during stop
+
+/**
+ * Get auto-stop settings from the settings store.
+ * @returns {{enabled: boolean, delay: number}} Auto-stop configuration
+ */
+const getAutoStopSettings = () => ({
+  enabled: settingsStore.sttAutoStop,
+  delay: (settingsStore.sttAutoStopDelay || 3) * 1000 // Convert seconds to milliseconds
+});
+
+/** Available model map (adjust to your app's selections) */
 const modelMap = {
   'Choice 1': 'Xenova/whisper-tiny.en',
   'Choice 2': 'Xenova/whisper-base.en',
@@ -90,50 +324,63 @@ const modelMap = {
 };
 
 /**
- * Handles errors consistently throughout the component
- * @param {string} context - Description of where error occurred
- * @param {Error} error - Error object
+ * Centralized error handler: logs + user-facing alert + cleanup.
+ * @param {string} context
+ * @param {Error} error
  */
 const handleError = (context, error) => {
   const message = error?.message || 'Unknown error';
   console.error(`[ERROR] ${context}`, message);
   alertStore.showAlert("error", context,
     message.includes('FeatureExtractor') ? 
-    'Audio processing initialization failed, please refresh the page and try again' : 
+    'Audio processing initialization failed, please refresh and try again.' : 
     message
   );
   stopRecording();
   cleanup();
 };
 
-/**
- * Initialize component, load speech recognition model and worker
- */
+/** ------------------------ Lifecycle: mount ------------------------ */
+
 onMounted(async () => {
-  const selectedModel_full = modelMap['Choice 1'];
+  const selectedModel_full = modelMap[settingsStore.selectedSTTModel] || modelMap['Choice 1'];
   model.value = '';
   try {
     isLoading.value = true;
     loadProgress.value = 10;
     
-    currentModelName.value = selectedModel_full ;
+    currentModelName.value = selectedModel_full;
     loadProgress.value = 30;
+
+    // Offline/full-pass ASR pipeline for final transcription
     transcriber = await pipeline(
       "automatic-speech-recognition",
-      selectedModel_full ,
+      selectedModel_full
     );
   } catch (error) {
     alertStore.showAlert("error", "Model Load Failed", error.message);
   } 
-  loadProgress.value = 99;
+  try {
+    loadProgress.value = 60;
+    segmentationProcessor = await AutoProcessor.from_pretrained('onnx-community/pyannote-segmentation-3.0');
+    loadProgress.value = 80;
+    segmentationModel = await AutoModelForAudioFrameClassification.from_pretrained(
+      'onnx-community/pyannote-segmentation-3.0', 
+      { device: 'wasm', dtype: 'fp32' }
+    );
+  } catch (error) {
+    alertStore.showAlert("error", "Segmentation Model Load Failed", error.message);
+  }
+  loadProgress.value = 90;
   try {
     console.group('[Main] Initialization start');
-    loadProgress.value = 1;    
+
+    // Streaming worker for partial/real-time updates
     worker = new Worker(new URL('@/workers/whisper-worker.js?worker&inline', import.meta.url), {
       type: 'module'
     });
+
     worker.onmessage = (e) => {
-      console.log(`[Main] Received message: ${e.data.status}`, e.data);
       try {
         switch (e.data.status) {
           case 'start':
@@ -150,9 +397,14 @@ onMounted(async () => {
             break;
           case 'update':
             isProcessing.value = true;
-            if (e.data.output) {   
-              if (e.data.tps) {
-                processingSpeed.value = e.data.tps;
+            if (e.data.output && e.data.tps) {
+              processingSpeed.value = e.data.tps;
+              // Update last transcribed text for auto-stop logic
+              const currentText = Array.isArray(e.data.output) ? 
+                e.data.output[0] : e.data.output || '';
+              if (currentText.trim()) {
+                lastTranscribedText = filterText(currentText);
+                console.log(`[Auto-stop Debug] Updated text from worker: "${lastTranscribedText}"`);
               }
             }
             break;
@@ -160,7 +412,13 @@ onMounted(async () => {
             const finalText = e.data.output && Array.isArray(e.data.output) ? 
               e.data.output[0] : e.data.output || '';
             const filteredFinal = filterText(finalText);
-            console.log(`[Main] Complete result: "${filteredFinal}"`);
+            
+            // Update last transcribed text for auto-stop logic
+            if (filteredFinal.trim()) {
+              lastTranscribedText = filteredFinal;
+              console.log(`[Auto-stop Debug] Updated text from worker (complete): "${lastTranscribedText}"`);
+            }
+            
             throttledUpdate(filteredFinal);
             setTimeout(() => {
               isProcessing.value = false;
@@ -179,13 +437,13 @@ onMounted(async () => {
     worker.onerror = (e) => handleError("Worker runtime error", e.error);
 
     initTimeout = setTimeout(() => {
-      if (isLoading.value) handleError("Initialization timeout", new Error("Model loading took too long, exceeded 60 seconds"));
+      if (isLoading.value) handleError("Initialization timeout", new Error("Model loading exceeded 60 seconds"));
     }, 60000);
 
-    const selectedModel = 'onnx-community/whisper-tiny';
+    // Load the same model family as the offline pipeline for consistency.
     worker.postMessage({ 
       type: 'load',
-      data: { modelId: selectedModel }
+      data: { modelId: selectedModel_full }
     });
 
     console.groupEnd();
@@ -194,17 +452,27 @@ onMounted(async () => {
   }
 });
 
+/** ------------------------ Recording control ------------------------ */
+
 /**
- * Begin audio recording and real-time transcription
- * Captures microphone input and sends to worker for processing
+ * Start capturing microphone audio and stream it to the Whisper worker for real-time transcription.
+ * Audio processing chain: microphone → noise reduction → low-pass filter → analysis
+ * Implements auto-stop feature that detects silence after sentence-ending punctuation.
  */
 async function startRecording() {
   try {
     console.group('[Main] Start recording');
-    accumulatedText.value = ''
+    accumulatedText.value = '';
     model.value = '';
     partialResult.value = '';
     completeAudioData = [];
+    resetWindow();
+    lastSendTime = 0;
+    
+    // Reset auto-stop logic variables
+    silenceStartTime = null;
+    lastTranscribedText = '';
+    isStoppingRecording = false;
     
     audioStream = await navigator.mediaDevices.getUserMedia({ 
       audio: { 
@@ -221,17 +489,7 @@ async function startRecording() {
 
     mediaStreamSource = audioContext.createMediaStreamSource(audioStream);
     
-    /**
-     * Creating our "virtual sound engineer" to clean up voice recordings
-     * 
-     * First, we set up a noise gate (like what radio DJs use) that helps
-     * separate your voice from background noise. It works by:
-     * - Setting a "noise floor" at -50dB (quiet enough to catch normal speech)
-     * - Using a gentle transition curve (40dB) so your voice sounds natural
-     * - Applying strong reduction (12:1) to background noises like fans or AC
-     * - Responding quickly (3ms) to catch the start of words
-     * - Fading out naturally (250ms) like a human ear would expect
-     */
+    // Audio processing chain: compressor for noise reduction → low-pass filter for clarity
     const noiseGate = audioContext.createDynamicsCompressor();
     noiseGate.threshold.value = -50;
     noiseGate.knee.value = 40;     
@@ -239,79 +497,98 @@ async function startRecording() {
     noiseGate.attack.value = 0.003;
     noiseGate.release.value = 0.25;
 
-    /**
-     * Next, we add a "tone filter" that focuses on the frequencies of human speech
-     * 
-     * Think of this like adjusting the treble knob on your stereo. We're keeping
-     * frequencies below 8kHz (where your voice lives) and reducing higher sounds
-     * (like hissing, static, or that annoying high-pitched whine from electronics).
-     * This makes your voice clearer to the AI, just like it would be easier for a
-     * friend to hear you in a noisy café if they could filter out the espresso machine.
-     */
     const lowPassFilter = audioContext.createBiquadFilter();
     lowPassFilter.type = 'lowpass';
     lowPassFilter.frequency.value = 8000;
 
-    /**
-     * Finally, we connect everything together like a recording studio signal chain
-     * 
-     * Your voice flows through each processor in sequence:
-     * 1. Raw microphone input (your actual voice)
-     * 2. Through the noise gate (removes background sounds)
-     * 3. Through the tone filter (focuses on speech frequencies)
-     * 
-     * It's like having a personal sound engineer clean up your audio in real-time!
-     */
     mediaStreamSource.connect(noiseGate);
     noiseGate.connect(lowPassFilter);
     
+    // ScriptProcessorNode is deprecated; consider AudioWorkletNode in future.
     scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
-    
-    // Route processed audio through scriptProcessor for analysis
-    lowPassFilter.connect(scriptProcessor);
-    scriptProcessor.connect(audioContext.destination);
 
-    audioBuffers = [];
-    lastSendTime = 0;
+    // Avoid feedback/loopback: route through a muted gain node
+    const mute = audioContext.createGain();
+    mute.gain.value = 0;
+
+    lowPassFilter.connect(scriptProcessor);
+    scriptProcessor.connect(mute).connect(audioContext.destination);
 
     scriptProcessor.onaudioprocess = e => {
       const chunk = e.inputBuffer.getChannelData(0);
-      // Skip empty or silent chunks
-      if (!chunk.some(s => s !== 0)) return;
+
+      // Calculate RMS (Root Mean Square) for volume/silence detection
+      let sum = 0;
+      for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+      const rms = Math.sqrt(sum / chunk.length);
+      
+      // Auto-stop feature: detect silence after sentence-ending punctuation
+      const now = Date.now();
+      
+      // Prevent processing if stop is already in progress
+      if (isStoppingRecording) {
+        return;
+      }
+      
+      if (rms < AUTO_STOP_RMS_THRESHOLD) {
+        // Silent audio detected
+        if (silenceStartTime === null) {
+          silenceStartTime = now;
+          console.log(`[Auto-stop] Silence detected. RMS: ${rms.toFixed(6)}, Last text: "${lastTranscribedText}"`);
+        } else {
+          const autoStopSettings = getAutoStopSettings();
+          const silenceDuration = now - silenceStartTime;
+          
+          // Auto-stop if enabled and silence duration threshold is met
+          if (autoStopSettings.enabled && silenceDuration >= autoStopSettings.delay) {
+            // Only auto-stop if the last transcribed text ends with sentence-ending punctuation
+            const endsWithPunctuation = /[.?]$/.test(lastTranscribedText.trim());
+            console.log(`[Auto-stop] Silence duration: ${silenceDuration}ms, Ends with punctuation: ${endsWithPunctuation}, Text: "${lastTranscribedText}"`);
+            if (endsWithPunctuation) {
+              console.log('[Auto-stop] Triggered: stopping recording after sentence completion');
+              // Schedule stop to allow current audio chunk to be processed
+              setTimeout(() => {
+                if (micActive.value) {
+                  stopRecording();
+                }
+              }, 0);
+            }
+          }
+        }
+      } else {
+        // Audio with content detected, reset silence timer
+        if (silenceStartTime !== null) {
+          console.log(`[Auto-stop] Audio detected, resetting silence timer. RMS: ${rms.toFixed(6)}`);
+        }
+        silenceStartTime = null;
+      }
+      
+      // Process audio for transcription (skip only extremely quiet noise)
+      if (rms < 1e-6) return;
 
       try {
-        // Add audio fragments to buffer
         const chunkCopy = new Float32Array(chunk);
-        audioBuffers.push(chunkCopy);
-        
-        // Also save to complete audio data array
-        completeAudioData.push(new Float32Array(chunk));
-        
+        // 1) Push into sliding window for streaming context
+        pushIntoWindow(chunkCopy);
+        // 2) Keep complete audio for final high-quality transcription
+        completeAudioData.push(chunkCopy);
+
         const now = Date.now();
-        // Send batch data at regular intervals
-        if (now - lastSendTime >= BUFFER_SEND_INTERVAL && audioBuffers.length > 0) {
+        if (now - lastSendTime >= BUFFER_SEND_INTERVAL) {
           lastSendTime = now;
-          
-          // Merge audio data in the buffer
-          const totalLength = audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
-          const mergedBuffer = new Float32Array(totalLength);
-          
-          let offset = 0;
-          audioBuffers.forEach(buffer => {
-            mergedBuffer.set(buffer, offset);
-            offset += buffer.length;
-          });
-          
-          // Clear the buffer
-          audioBuffers = [];
-          
-          worker.postMessage({
-            type: 'generate',
-            data: { 
-              audio: mergedBuffer,
-              language: 'en'
-            }
-          });
+
+          // Send sliding window buffer to Worker for real-time transcription
+          const mergedBuffer = getLastSamples(MAX_WINDOW_SAMPLES);
+
+          if (mergedBuffer.length > 0) {
+            worker.postMessage({
+              type: 'generate',
+              data: { 
+                audio: mergedBuffer,
+                language: settingsStore.selectedLanguage || 'en'
+              }
+            });
+          }
         }
       } catch (error) {
         handleError("Audio sending failed", error);
@@ -325,47 +602,100 @@ async function startRecording() {
 }
 
 /**
- * Stop recording and process complete audio
- * Performs final high-quality transcription on full audio data
+ * Stop audio capture and perform final high-quality transcription with speaker diarization.
+ * Creates a WAV file from the complete session audio and processes it through:
+ * 1. Whisper ASR for transcription with timestamps
+ * 2. Pyannote segmentation for speaker diarization
+ * 3. Merges results to produce speaker-attributed transcription
  */
 async function stopRecording() {
+  if (isStoppingRecording) {
+    console.log('[MicButton] Stop already in progress, ignoring duplicate call');
+    return;
+  }
+  
+  if (!micActive.value) {
+    console.log('[MicButton] Mic already stopped, ignoring call');
+    return;
+  }
+  
+  isStoppingRecording = true;
+  micActive.value = false;
+  micBtnImage.value = micImg;
+  
+  console.log(`[MicButton] Stopping recording, collected ${completeAudioData.length} audio chunks`);
+  
   try {
-    [scriptProcessor, mediaStreamSource].forEach(node => node?.disconnect());
+    // Immediately disconnect scriptProcessor to prevent further audio processing
+    if (scriptProcessor) {
+      scriptProcessor.onaudioprocess = null;
+      scriptProcessor.disconnect();
+    }
+    if (mediaStreamSource) {
+      mediaStreamSource.disconnect();
+    }
+    
+    // Brief grace period to allow final processing to complete
+    await new Promise(r => setTimeout(r, 120));
+
+    // Clean up remaining audio connections
+    [scriptProcessor, mediaStreamSource].forEach(node => {
+      if (node && node.disconnect) {
+        try {
+          node.disconnect();
+        } catch (e) {
+          // Already disconnected
+        }
+      }
+    });
     if (audioContext && audioContext.state !== 'closed') {
-      audioContext.close();
+      await audioContext.close();
     }
     audioStream?.getTracks().forEach(track => track.stop());
+    resetWindow();
     
-    // Merge complete audio data
-    let fullAudio = null;
+    // Process complete session audio for final high-quality transcription
     if (completeAudioData.length > 0) {
-      // Calculate total length
       const totalLength = completeAudioData.reduce((sum, buf) => sum + buf.length, 0);
-      fullAudio = new Float32Array(totalLength);
-      
-      // Merge all fragments
+      const fullAudio = new Float32Array(totalLength);
+
       let offset = 0;
       completeAudioData.forEach(buffer => {
         fullAudio.set(buffer, offset);
         offset += buffer.length;
       });
+
+      const durationSec = fullAudio.length / WHISPER_SR;
+      console.log(`[Audio Processing] Chunks: ${completeAudioData.length}, Samples: ${fullAudio.length}, Duration: ${durationSec.toFixed(2)}s`);
       
-      // Process complete audio with the loaded model
       if (transcriber) {
         try {
-          console.log("[Main] Processing complete audio with pipeline...");
           isProcessing_normalpipeline.value = true;
-          const result = await transcriber(fullAudio);
-          const finalText = filterText(result.text || '');
-          console.log(`[Main] Pipeline complete result: "${finalText}"`);
-          model.value = finalText;
-          emit("textAvailable");
+          
+          // Convert PCM float32 to WAV format for processing
+          const audioBlob = await float32ArrayToWavBlob(fullAudio);
+          const audioUrl = URL.createObjectURL(audioBlob);
+          
+          // Run transcription and diarization in parallel for efficiency
+          const [transcription, diarization] = await Promise.all([
+            transcriber(audioUrl, {
+              return_timestamps: 'true',
+            }),
+            processDiarization(audioBlob)
+          ]);
+          
+          // Merge transcription with speaker diarization
+          const mergedResults = mergeResults(transcription, diarization);
+          model.value = mergedResults.formattedText;
           isProcessing_normalpipeline.value = false;
+          
+          emit("textAvailable", mergedResults);
+          emit("audioProcessingComplete");
         } catch (error) {
           handleError("Complete audio processing failed", error);
         }
       } else {
-        // Fallback to worker if pipeline isn't available
+        // Fallback to worker if transcriber not available
         worker?.postMessage({ 
           type: 'finalize',
           data: { fullAudio }
@@ -374,24 +704,85 @@ async function stopRecording() {
       }
     }
     
-    micActive.value = false;
   } catch (error) {
     handleError("Stop recording failed", error);
+  } finally {
+    isStoppingRecording = false;
+    console.log('[MicButton] Stop recording completed, flag reset');
   }
 }
 
+/** ------------------------ Utilities ------------------------ */
+
 /**
- * Reset UI elements and partial results 
+ * Convert a Float32 PCM buffer into a 16-bit PCM WAV Blob.
+ * Applies volume normalization and proper WAV header formatting.
+ * @param {Float32Array} float32Array - Raw audio samples
+ * @returns {Promise<Blob>} WAV-formatted audio blob
  */
+async function float32ArrayToWavBlob(float32Array) {
+  const numChannels = 1; // mono
+  const sampleRate = WHISPER_SR;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = float32Array.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt subchunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // PCM
+  view.setUint16(20, 1, true);  // PCM format
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+
+  // data subchunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // Convert float32 samples to int16 with volume adjustment and clamping
+  let offset = 44;
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i] * 0.8));
+    const int16Sample = (s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7FFF));
+    view.setInt16(offset, int16Sample, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/**
+ * Write ASCII string into a DataView at a given offset for WAV header.
+ * @param {DataView} view - Target data view
+ * @param {number} offset - Byte offset to start writing
+ * @param {string} string - ASCII string to write
+ */
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+/** Clean up UI state after recording stops. */
 function cleanup() {
   partialResult.value = '';
   processingSpeed.value = 0;
   micBtnImage.value = micImg;
 }
 
-/**
- * Clean up resources when component is destroyed
- */
+/** ------------------------ Lifecycle: unmount ------------------------ */
+
 onBeforeUnmount(() => {
   try {
     clearTimeout(initTimeout);
@@ -406,23 +797,25 @@ onBeforeUnmount(() => {
   }
 });
 
+/** ------------------------ UI handlers ------------------------ */
+
 /**
- * Handle microphone button click
- * Toggles recording state
+ * Toggle microphone recording on/off.
+ * Handles state management and prevents operations during loading or processing.
  */
 const micClick = async () => {
   try {
-    // If mic is already active, allow turning it off even during processing
     if (micActive.value) {
-      micActive.value = false;
-      micBtnImage.value = micImg;
-      stopRecording();
+      console.log('[MicButton] Manual stop requested');
+      // Let stopRecording handle the micActive.value change
+      await stopRecording();
       return;
     }
-    
-    // Otherwise, only allow turning ON if not loading or processing
-    if (isLoading.value || isProcessing.value) return;
-    
+    if (isLoading.value || isProcessing.value || isStoppingRecording) {
+      console.log('[MicButton] Cannot start - loading, processing, or stopping');
+      return;
+    }
+    console.log('[MicButton] Manual start requested');
     micActive.value = true;
     micBtnImage.value = micActiveImg;
     await startRecording();
@@ -432,28 +825,30 @@ const micClick = async () => {
 };
 
 /**
- * Handle partial transcription results with throttling
- * Updates model value with intermediate results for responsive UI
+ * Update the transcription output with throttling to prevent excessive UI updates.
+ * Uses overwrite mode to avoid duplicated text from streaming updates.
+ * @param {string} text - New transcription text
  */
 const throttledUpdate = throttle((text) => {
-  if (!text) return;
-  
-  if (partialResult.value !== text) {
-    if (partialResult.value) {
-      accumulatedText.value += partialResult.value + ' ';
-    }
-    partialResult.value = text;
-  }
-  
+  if (text == null) return;
+
   if (model !== undefined) {
-    model.value = accumulatedText.value + text;
+    // Clear first to prevent duplicated prefix from streaming updates
+    model.value = '';
+    // Write the new text on the next microtask
+    queueMicrotask(() => {
+      model.value = text;
+    });
   }
+
+  // Store the latest partial result
+  partialResult.value = text;
 }, 200);
 
-/** Handle microphone button hover state */
+/** Handle microphone button hover - show hover image */
 const micHover = () => !micActive.value && (micBtnImage.value = micHoverImg);
 
-/** Handle microphone button hover exit state */
+/** Handle microphone button mouse leave - show default image */
 const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
 </script>
 
@@ -466,7 +861,7 @@ const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
       <div class="loading-text">Initializing: {{ currentModelName }}</div>
     </div>
 
-    <!-- Full-Screen Processing Animation -->
+    <!-- Full-screen overlay while running the final offline pass -->
     <div v-show="isProcessing_normalpipeline" class="processing-animation">
       <div class="processing-spinner"></div>
       <div class="processing-text">Processing Audio...</div>
@@ -514,16 +909,16 @@ const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
   from {
     border-color: rgba(69, 189, 69, 0.9);
     border-width: 0;
-    border-radius: 100%; /* Maintain circular border */
+    border-radius: 100%;
   }
   to {
     border-color: transparent;
     border-width: 20px;
-    border-radius: 100%; /* Maintain circular border */
+    border-radius: 100%;
   }
 }
 
-/* Full-Screen Processing Animation */
+/* Full-screen processing overlay */
 .processing-animation {
   position: fixed;
   top: 0;
@@ -559,7 +954,8 @@ const micUnhover = () => !micActive.value && (micBtnImage.value = micImg);
   100% { transform: rotate(360deg); }
 }
 
-/* Loading interface styles */
+/* Loading overlay styles */
+
 .loading-overlay {
   position: absolute;
   top: 0;
