@@ -1,25 +1,72 @@
 <script setup>
-import {useSettingsStore} from "@/stores/SettingsStore.js";
-import {onMounted, ref} from "vue";
+import { useSettingsStore } from "@/stores/SettingsStore.js";
+import { onMounted, ref } from "vue";
 
-const settingsStore = useSettingsStore()
+const settingsStore = useSettingsStore();
+const voiceClips = ref(null);
+const uploadedClips = ref([]);
 
-const emit = defineEmits(['close'])
-const showOpenAIKey = ref(false)
+const selectedSTTModel = ref(settingsStore.selectedSTTModel || "Choice 1");
 
-const isChrome = ref(true)
-const isDesktop = ref(true)
+const emit = defineEmits(["close"]);
+const showOpenAIKey = ref(false);
 
-const closeAPIWarning = ref(false)
-const closeBrowserWarning = ref(false)
+const isChrome = ref(true);
+const isDesktop = ref(true);
+
+const closeAPIWarning = ref(false);
+const closeBrowserWarning = ref(false);
+
+// Model Selection (Default: OpenAI)
+const selectedModel = ref(settingsStore.selectedLLMModel || "OpenAI");
 
 onMounted(() => {
-  isChrome.value = !!window.chrome
-  isDesktop.value = screen.width > 1000
-  console.log("ischromedesktop", isChrome.value, isDesktop.value)
-})
+  isChrome.value = !!window.chrome;
+  isDesktop.value = screen.width > 1000;
+
+  // Retrieve stored file names
+  const storedClips = JSON.parse(localStorage.getItem('voiceClips')) || [];
+  uploadedClips.value = storedClips.map(clip => ({ name: clip.name })); // Reconstruct file list
+});
+
+
+// Handle file upload
+const handleFileUpload = (event) => {
+  if (event && event.target.files.length > 0) {
+    const newClips = Array.from(event.target.files);
+
+    // Prevent duplicates
+    const uniqueClips = newClips.filter(
+      (newClip) => !uploadedClips.value.some((existingClip) => existingClip.name === newClip.name)
+    );
+
+    uploadedClips.value = [...uploadedClips.value, ...uniqueClips];
+    settingsStore.saveVoiceClips(uploadedClips.value);
+  }
+};
+
+// Remove a clip
+const removeClip = (index) => {
+  uploadedClips.value.splice(index, 1);
+  uploadedClips.value = [...uploadedClips.value]; // Force reactivity update
+  settingsStore.saveVoiceClips(uploadedClips.value);
+};
+
+// Save selected model to store
+const saveSelectedModel = () => {
+  settingsStore.saveSelectedLLMModel(selectedModel.value);
+};
+
+const startVoiceCloning = () => {
+  settingsStore.cloneVoice();
+};
+
+const saveSelectedSTTModel = () => {
+  settingsStore.saveSelectedSTTModel(selectedSTTModel.value);
+};
 
 </script>
+
 
 <template>
   <div id="overlay-container">
@@ -65,26 +112,170 @@ onMounted(() => {
           </v-chip>
         </div>
         <h2 class="title">Settings</h2>
-        <div class="group-content">
-          <h3 class="subheading"><span style="color: red">*</span> OpenAI API Key</h3>
-          <span>
-        Ossia is built on top of ChatGPT. You need an OpenAI account to use Ossia, as you would if you were using ChatGPT
-        normally. Visit their website <a href="https://platform.openai.com/api-keys">here</a> to generate a personal account key.
-            We suggest also setting spending limits to control your spend with OpenAI.
-        </span>
-          <div id="api-key-input-wrapper">
-            <v-text-field id="api-key-input"
-                          :append-inner-icon="showOpenAIKey ? 'mdi-eye' : 'mdi-eye-off'"
-                          @click:append-inner="showOpenAIKey = !showOpenAIKey"
-                          :type="showOpenAIKey ? 'text' : 'password'"
-                          v-model="settingsStore.openAIAPIKey"
-                          label="Do not share this key. E.g. sf-lx3l5DaIyg..."/>
-            <strong id="important">Important!</strong> You will be charged for each request Ossia makes to ChatGPT -
-            do not share your key with anyone! (We cannot and do not store your key - see the video for details)
+          <!-- Model Selection (At the Top of Settings) -->
+          <div class="group-content">
+            <h3 class="subheading">Choose AI Model</h3>
+            <v-select
+              v-model="selectedModel"
+              label="Select Model"
+              :items="['OpenAI', '9b Model', '3b Model']"
+              @update:modelValue="saveSelectedModel"
+            ></v-select>
           </div>
-        </div>
+          <div class="group-content">
+            <h3 class="subheading">Choose Speech-to-Text Model</h3>
+            <v-select
+            v-model="selectedSTTModel"
+            label="Select Speech-to-Text Model"
+            :items="[
+              { text: 'Whisper Tiny (peak performance)', value: 'Choice 1' },
+              { text: 'Whisper Base (performance)', value: 'Choice 2' },
+              { text: 'Whisper Small (accuracy)', value: 'Choice 3' }
+            ]"
+            item-title="text"
+            item-value="value"
+            @update:modelValue="saveSelectedSTTModel"
+          />
+          </div>
+
+          <!-- Speech-to-Text Auto-Stop Settings -->
+          <div class="group-content">
+            <h3 class="subheading">Speech-to-Text Auto-Stop Settings</h3>
+            <p>Configure automatic recording stop when a sentence ends with punctuation followed by silence.</p>
+            
+            <div class="stt-setting">
+              <v-checkbox
+                v-model="settingsStore.sttAutoStop"
+                label="Enable auto-stop when sentence ends (. or ?) followed by silence"
+                density="compact"
+              />
+              <p class="stt-help">
+                When enabled, recording will automatically stop after detecting a sentence-ending punctuation mark (period or question mark) 
+                followed by a period of silence. This helps create natural conversation breaks.
+              </p>
+            </div>
+
+            <div class="stt-setting" v-if="settingsStore.sttAutoStop">
+              <h4 class="stt-subsetting">Silence Duration (seconds)</h4>
+              <div class="slider-container">
+                <label>{{ settingsStore.sttAutoStopDelay }} seconds of silence required</label>
+                <v-slider
+                  v-model="settingsStore.sttAutoStopDelay"
+                  :min="1"
+                  :max="30"
+                  :step="1"
+                  show-ticks="always"
+                  tick-size="4"
+                  density="compact"
+                />
+                <p class="stt-help">
+                  Lower values = stops quickly after you finish speaking. Higher values = waits longer before stopping.
+                  Recommended: 3-5 seconds for most users.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Keyboard Predictor Settings -->
+          <div class="group-content">
+            <h3 class="subheading">Keyboard Predictor Settings</h3>
+            <p>Configure what context the keyboard predictor uses for word suggestions.</p>
+            
+            <div class="predictor-setting">
+              <v-checkbox
+                v-model="settingsStore.predictorUseHistory"
+                label="Use recent chat history for predictions"
+                density="compact"
+              />
+              <p class="predictor-help">
+                When enabled, the predictor will consider recent conversation context when suggesting words.
+              </p>
+            </div>
+
+            <div class="predictor-setting">
+              <v-checkbox
+                v-model="settingsStore.predictorUseBackstory"
+                label="Use background/backstory for predictions"
+                density="compact"
+              />
+              <p class="predictor-help">
+                When enabled, the predictor will use your backstory settings to provide more personalized word suggestions.
+              </p>
+            </div>
+
+            <div class="predictor-setting">
+              <v-checkbox
+                v-model="settingsStore.predictorUseVisionContext"
+                label="Use vision/context (from image analysis) for predictions"
+                density="compact"
+              />
+              <p class="predictor-help">
+                When enabled, results you add from the Vision tool (\"Add to context\") will be included in predictor prompts.
+              </p>
+            </div>
+          </div>
+
+          <!-- OpenAI API Key (Only Shows if OpenAI is Selected) -->
+          <div class="group-content" v-if="selectedModel === 'OpenAI'">
+            <h3 class="subheading"><span style="color: red">*</span> OpenAI API Key</h3>
+            <span>
+              Ossia is built on top of ChatGPT. You need an OpenAI account to use Ossia, as you would if you were using ChatGPT
+              normally. Visit their website <a href="https://platform.openai.com/api-keys">here</a> to generate a personal account key.
+              We suggest also setting spending limits to control your spend with OpenAI.
+            </span>
+            <div id="api-key-input-wrapper">
+              <v-text-field
+                id="api-key-input"
+                :append-inner-icon="showOpenAIKey ? 'mdi-eye' : 'mdi-eye-off'"
+                @click:append-inner="showOpenAIKey = !showOpenAIKey"
+                :type="showOpenAIKey ? 'text' : 'password'"
+                v-model="settingsStore.openAIAPIKey"
+                label="Do not share this key. E.g. sf-lx3l5DaIyg..."
+              />
+              <strong id="important">Important!</strong> You will be charged for each request Ossia makes to ChatGPT - do not share your key with anyone!
+            </div>
+          </div>
+
+          <!-- Vision API Settings -->
+          <div class="group-content">
+            <h3 class="subheading">Vision Analysis Settings</h3>
+            <p>Configure settings for image analysis features. Only local SmolVLM model is available (ChatGPT vision is disabled).</p>
+            
+            <div class="vision-setting">
+              <h4 class="vision-subsetting">Vision Prompt</h4>
+              <v-textarea
+                v-model="settingsStore.visionPrompt"
+                label="Default prompt for vision analysis"
+                rows="3"
+                density="comfortable"
+                hint="This prompt will be used when analyzing images"
+                persistent-hint
+              />
+              <p class="vision-help">
+                Customize what you want the vision model to focus on when analyzing images.
+              </p>
+            </div>
+
+            <div class="vision-setting">
+              <h4 class="vision-subsetting">Auto-Analysis Settings</h4>
+              <v-checkbox
+                v-model="settingsStore.visionAutoTriggerOnMicStop"
+                label="Automatically trigger vision analysis when microphone recording stops"
+                density="compact"
+              />
+              <v-checkbox
+                v-model="settingsStore.visionAutoAddContext"
+                label="Automatically add vision results to context"
+                density="compact"
+              />
+              <p class="vision-help">
+                ⚠️ When auto-trigger is enabled, the camera overlay will open automatically after you finish speaking.
+              </p>
+            </div>
+          </div>
+
         <div class="group-content">
-          <h3 class="subheading"><span style="color: red">*</span> User Backstory</h3>
+          <h3 class="subheading">User Backstory<span v-if="selectedModel === 'OpenAI'" style="color: red">*</span></h3>
           Describe the user in as much detail as possible. e.g. name, hobbies, political leaning, temperament, family
           and close friends etc.
           <span id="example-link"
@@ -93,6 +284,30 @@ onMounted(() => {
             <v-textarea id="backstory-input" label="user backstory" v-model="settingsStore.backstory" hide-details/>
           </div>
         </div>
+        <div class="group-content">
+          <h3 class="subheading">Voice Cloning</h3>
+          <p>Upload audio samples of your voice to generate a cloned voice model.</p>
+
+          <v-file-input
+            v-model="voiceClips"
+            multiple
+            label="Upload audio clips"
+            accept="audio/*"
+            @change="handleFileUpload"
+          ></v-file-input>
+
+          <div v-if="uploadedClips.length">
+            <h4>Uploaded Clips</h4>
+            <ul>
+              <li v-for="(clip, index) in uploadedClips" :key="index">
+                {{ clip.name }} <v-icon icon="mdi-delete" @click="removeClip(index)"></v-icon>
+              </li>
+            </ul>
+          </div>
+
+          <v-btn @click="startVoiceCloning" :disabled="uploadedClips.length === 0">Clone Voice</v-btn>
+        </div>
+
         <div class="group-content">
           <h3 class="subheading"><span style="color: red">*</span> Terms & Conditions and Cookies </h3>
           <v-checkbox v-model="settingsStore.liabilityAgreement" label="I agree that by using this software in beta I am doing so
@@ -140,10 +355,8 @@ onMounted(() => {
         <v-btn
             id="save-btn"
             :disabled="!(settingsStore.liabilityAgreement &&
-                     settingsStore.cookieAgreement &&
-                     settingsStore.openAIAPIKey &&
-                     settingsStore.backstory
-                     )"
+              settingsStore.cookieAgreement &&
+              (selectedModel !== 'OpenAI' || (settingsStore.openAIAPIKey && settingsStore.backstory)))"
             @click="emit('close'); settingsStore.save()">
           Let's Go
         </v-btn>
@@ -322,6 +535,75 @@ a {
       filter: brightness(95%)
     }
   }
+}
+
+.vision-setting {
+  margin: 15px 0;
+  padding: 15px;
+  background: rgba(0, 182, 0, 0.05);
+  border: 1px solid rgba(0, 182, 0, 0.2);
+  border-radius: 8px;
+}
+
+.vision-subsetting {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+  color: theme.$primary;
+}
+
+.vision-help {
+  font-size: 0.85rem;
+  color: theme.$ossia-text-light-2;
+  margin: 8px 0 0 0;
+  font-style: italic;
+}
+
+.slider-container {
+  margin-top: 10px;
+  
+  label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 5px;
+  }
+}
+
+.stt-setting {
+  margin: 15px 0;
+  padding: 15px;
+  background: rgba(0, 182, 0, 0.05);
+  border: 1px solid rgba(0, 182, 0, 0.2);
+  border-radius: 8px;
+}
+
+.stt-subsetting {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+  color: theme.$primary;
+}
+
+.stt-help {
+  font-size: 0.85rem;
+  color: theme.$ossia-text-light-2;
+  margin: 8px 0 0 0;
+  font-style: italic;
+}
+
+.predictor-setting {
+  margin: 15px 0;
+  padding: 15px;
+  background: rgba(0, 182, 0, 0.05);
+  border: 1px solid rgba(0, 182, 0, 0.2);
+  border-radius: 8px;
+}
+
+.predictor-help {
+  font-size: 0.85rem;
+  color: theme.$ossia-text-light-2;
+  margin: 8px 0 0 0;
+  font-style: italic;
 }
 
 @media screen and (max-width: 600px), (max-height: 770px) {

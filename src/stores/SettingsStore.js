@@ -1,4 +1,4 @@
-import {ref, watch} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {defineStore} from 'pinia'
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -6,7 +6,74 @@ export const useSettingsStore = defineStore('settings', () => {
   const openAIAPIKey = ref(localStorage.getItem('openAIAPIKey') || '')
   const context = ref(localStorage.getItem('context') || '')
   const backstory = ref(localStorage.getItem('backstory') || '')
+  const voiceClips = ref([])
+  const selectedSTTModel = ref(localStorage.getItem('selectedSTTModel') || 'Choice 1'); // Default: Choice 1
+  const selectedLLMModel = ref(localStorage.getItem('selectedLLMModel') || 'OpenAI'); // Default: OpenAI
+  
+  // Speech-to-Text Settings
+  const sttAutoStop = ref(localStorage.getItem('sttAutoStop') !== null ? localStorage.getItem('sttAutoStop') === 'true' : true);
+  const sttAutoStopDelay = ref(parseInt(localStorage.getItem('sttAutoStopDelay')) || 3)
 
+  // Predictor Settings
+  const predictorUseHistory = ref(localStorage.getItem('predictorUseHistory') === 'true')
+  const predictorUseBackstory = ref(localStorage.getItem('predictorUseBackstory') === 'true')
+  const predictorUseVisionContext = ref(localStorage.getItem('predictorUseVisionContext') === 'true')
+
+  // Vision Settings
+  const visionModel = ref('local') // Always use local model - ChatGPT vision disabled
+  const visionAutoAnalysis = ref(localStorage.getItem('visionAutoAnalysis') === 'true')
+  const visionAutoAddContext = ref(localStorage.getItem('visionAutoAddContext') === 'true')
+  const visionAutoTriggerOnMicStop = ref(localStorage.getItem('visionAutoTriggerOnMicStop') === 'true')
+  const visionPrompt = ref(localStorage.getItem('visionPrompt') || 'Describe what you see in this image in detail.')
+  const visionGPTModel = ref(localStorage.getItem('visionGPTModel') || 'gpt-4o')
+  const visionMaxTokens = ref(parseInt(localStorage.getItem('visionMaxTokens')) || 300)
+  
+  try {
+    const storedClips = JSON.parse(localStorage.getItem('voiceClips'));
+    if (Array.isArray(storedClips) && storedClips.length > 0) {
+      voiceClips.value = storedClips;
+    } else {
+      voiceClips.value = []; // Ensure no empty or invalid item appears
+    }
+  } catch (error) {
+    console.error("Error parsing voiceClips from localStorage:", error);
+    voiceClips.value = []; // Reset on error
+  }
+  
+
+  function saveVoiceClips(clips) {
+    const clipNames = clips.map(clip => ({ name: clip.name })); // Store only names
+    localStorage.setItem('voiceClips', JSON.stringify(clipNames));
+    voiceClips.value = clips;
+  }
+  
+
+  function cloneVoice() {
+    if (voiceClips.value.length === 0) {
+      console.error("No voice clips uploaded");
+      return;
+    }
+    console.log("Cloning voice with clips: ", voiceClips.value);
+    alert("Voice cloning complete! ✅");
+
+  }
+
+  function saveSelectedSTTModel(model) {
+    selectedSTTModel.value = model;
+    localStorage.setItem('selectedSTTModel', model);
+    window.location.reload(); // Reload the page to apply the new model
+  }
+
+  function saveSelectedLLMModel(model) {
+    selectedLLMModel.value = model;
+    localStorage.setItem('selectedLLMModel', model);
+
+    window.location.reload(); // Reload the page to apply the new model
+  }
+
+  const openAIAPIKeyIsValid = computed(() => {
+    return openAIAPIKey.value.length > 0
+  })
   const exampleContext = ref(
     `Time: 20:37
 Date: Monday 25 December 2023
@@ -32,96 +99,6 @@ senses pity.
 - Religion: None.
 `)
 
-  function getSystemMessage() {
-    return `
-You are an AI Bot for someone living with Motor Neurone Disease (MND) (hereafter referred to as the 'assistant'). You 
-receive a conversation between the assistant and another person (the 'user') . Your job 
-is to suggest various likely short sentences that the assistant might want to say to continue the conversation, or a short 
-list of key words and phrases the assistant can use to build a sentence.
-
-Here are the rules for the generated suggestions:
-
-- suggestions SHOULD cover a broad range of emotions or affirmative and negative options where it is suitable
-- suggestions SHOULD reflect the personality and interests of the user given in the assistant's backstory, but only where appropriate.
-- suggestions SHOULD reflect any current context given.
-- suggestions SHOULD be tailored to the person you are speaking with
-- suggestions MUST be numerous enough to give variety, but not overwhelming in choice. Around 5 is often appropriate for sentences, about 10-15 for key words.
-- suggestions MUST not be so specific that they assume any information not given in the backstory
-- suggestions MUST not assume the user is always positive and polite. The user may often be frustrated, negative or tired 
-
-Here is the assistant's backstory:
-${backstory.value}
-
-The format of the conversation will be a list of previous messages between 'user' and 'assistant', followed by an instruction. 
-The instruction could be to generate suggested sentences or a likely words list, or to modify previous suggestions for example.
-
-All your generated suggestions MUST be a valid JSON list.
-Below are some examples of inputs and outputs in the correct format. You will be playing the role of the assistant:
-user:
-just going to the bar, want anything?
-
-system:
-Given the conversation history, generate a list of 3 to 5 short generic sentences the assistant may want to say
-
-assistant:
-{
-  "suggestions": [
-    "No I'm okay thanks",
-    "Oh go on then, a beer would be great thanks",
-    "Well, maybe a glass of water?"
-  ]
-}
------
-user:
-have you seen Dune yet?
-
-system:
-Given the following list of words, generate between 3-5 sentences that the assistant might be trying to say. 
-Keep them generic but use all the words:
-['recommend', 'watching']
-
-assistant:
-{
-  "suggestions": [
-    "No not yet, would you recommend watching it?",
-    "Yes it was great, I'd really recommend watching it!",
-    "Yes. It wasn't that good, wouldn't really recommend watching it",
-  ]
-}
-
------
-user:
-did you have a good day at work?
-
-system:
-Given the conversation history, generate a short list of key words or very short phrases the assistant can 
-select from to build a new sentence
-
-assistant:
-{
-  "suggestions": [
-    "not",
-    "good",
-    "bad",
-    "stressful",
-    "fun",
-    "boring",
-    "tired",
-    "weekend",
-    "boss",
-    "colleagues",
-    "office",
-    "hate",
-    "love",
-    "deadline",
-    "meeting",
-    "pressure",
-    "day off",
-  ]
-}
-`
-  }
-
   const liabilityAgreement = ref(localStorage.getItem('liabilityAgreement') === "true" || false)
 
   const cookieAgreement = ref(localStorage.getItem('cookieAgreement') === "true" || false)
@@ -137,6 +114,25 @@ assistant:
     localStorage.setItem('backstory', backstory.value)
     localStorage.setItem('liabilityAgreement', liabilityAgreement.value.toString())
     localStorage.setItem('cookieAgreement', cookieAgreement.value.toString())
+    
+    // Vision settings
+    // visionModel is always 'local' - ChatGPT vision disabled
+    localStorage.setItem('visionAutoAnalysis', visionAutoAnalysis.value.toString())
+    localStorage.setItem('visionAutoAddContext', visionAutoAddContext.value.toString())
+    localStorage.setItem('visionAutoTriggerOnMicStop', visionAutoTriggerOnMicStop.value.toString())
+    localStorage.setItem('visionPrompt', visionPrompt.value)
+    localStorage.setItem('visionGPTModel', visionGPTModel.value)
+    localStorage.setItem('visionMaxTokens', visionMaxTokens.value.toString())
+    
+    // STT settings
+    localStorage.setItem('sttAutoStop', sttAutoStop.value.toString())
+    localStorage.setItem('sttAutoStopDelay', sttAutoStopDelay.value.toString())
+    
+    // Predictor settings
+    localStorage.setItem('predictorUseHistory', predictorUseHistory.value.toString())
+    localStorage.setItem('predictorUseBackstory', predictorUseBackstory.value.toString())
+    localStorage.setItem('predictorUseVisionContext', predictorUseVisionContext.value.toString())
+    
     showSettingsWarning.value = false
     console.log('settings saved')
   }
@@ -157,13 +153,35 @@ assistant:
     showSettingsOverlay,
     showSettingsWarning,
     openAIAPIKey,
+    openAIAPIKeyIsValid,
     context,
     backstory,
+    selectedSTTModel,
+    saveSelectedSTTModel,
+    selectedLLMModel,
+    saveSelectedLLMModel,
+    voiceClips,
+    saveVoiceClips,
+    cloneVoice,
     exampleContext,
     exampleBackstory,
-    getSystemMessage,
     liabilityAgreement,
     cookieAgreement,
     save,
+    // Vision settings
+    visionModel,
+    visionAutoAnalysis,
+    visionAutoAddContext,
+    visionAutoTriggerOnMicStop,
+    visionPrompt,
+    visionGPTModel,
+    visionMaxTokens,
+    // STT settings
+    sttAutoStop,
+    sttAutoStopDelay,
+    // Predictor settings
+    predictorUseHistory,
+    predictorUseBackstory,
+    predictorUseVisionContext,
   }
 })

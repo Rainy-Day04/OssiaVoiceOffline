@@ -71,12 +71,27 @@ class AutomaticSpeechRecognitionPipeline {
           progress_callback,
       });
 
+      // Determine best available device (WebGPU or fallback to WASM)
+      let selectedDevice = 'wasm';
+      try {
+          // Check if WebGPU is available and not already in use by another instance
+          if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+              const adapter = await navigator.gpu.requestAdapter();
+              if (adapter) {
+                  selectedDevice = 'webgpu';
+                  console.log('[Worker] Using WebGPU acceleration');
+              }
+          }
+      } catch (e) {
+          console.warn('[Worker] WebGPU unavailable or in use, falling back to WASM:', e.message);
+      }
+
       this.model ??= WhisperForConditionalGeneration.from_pretrained(this.model_id, {
           dtype: {
-              encoder_model: 'fp32', // 'fp16' works too but may affect quality
-              decoder_model_merged: 'q4', // or 'fp32' ('fp16' is broken in current implementations)
+              encoder_model: 'fp32',
+              decoder_model_merged: 'q4',
           },
-          device: 'webgpu', // Uses GPU acceleration when available
+          device: selectedDevice,
           progress_callback,
       });
 
@@ -92,12 +107,6 @@ class AutomaticSpeechRecognitionPipeline {
 let processing = false;
 
 /**
- * Buffer for storing audio data between processing cycles
- * @type {Array}
- */
-let audioBuffer = [];
-
-/**
  * Process audio data and generate transcription
  * Sends incremental updates to main thread during processing
  * 
@@ -108,12 +117,13 @@ let audioBuffer = [];
  * @returns {Promise<void>}
  */
 async function generate({ audio, language }) {
-  // Skip if already processing
-  if (processing) return;
-  processing = true;
+  try {
+    // Skip if already processing
+    if (processing) return;
+    processing = true;
 
-  // Tell the main thread we are starting
-  self.postMessage({ status: 'start' });
+    // Tell the main thread we are starting
+    self.postMessage({ status: 'start' });
 
   // Retrieve the text-generation pipeline
   const [tokenizer, processor, model] = await AutomaticSpeechRecognitionPipeline.getInstance();
@@ -172,44 +182,61 @@ async function generate({ audio, language }) {
       output: outputText,
   });
   
-  // Reset processing state
-  processing = false;
+  } catch (error) {
+    console.error('[Worker] Generation error:', error);
+    self.postMessage({
+      status: 'error',
+      error: `Transcription failed: ${error.message}`
+    });
+  } finally {
+    // Always reset processing state
+    processing = false;
+  }
 }
 
 /**
  * Initialize and load the speech recognition model
- * Includes model warm-up to compile WebGPU shaders
+ * Includes model warm-up to compile shaders
  * 
  * @async
  * @returns {Promise<void>}
  */
 async function load() {
-  // Notify main thread that loading has started
-  self.postMessage({
-      status: 'loading',
-      data: 'Loading model...'
-  });
+  try {
+    // Notify main thread that loading has started
+    self.postMessage({
+        status: 'loading',
+        data: 'Loading model...'
+    });
 
-  // Load the pipeline with progress reporting
-  const [tokenizer, processor, model] = await AutomaticSpeechRecognitionPipeline.getInstance(x => {
-      // Forward progress updates to main thread
-      self.postMessage(x);
-  });
+    // Load the pipeline with progress reporting
+    await AutomaticSpeechRecognitionPipeline.getInstance(x => {
+        // Forward progress updates to main thread
+        self.postMessage(x);
+    });
 
-  self.postMessage({
-      status: 'loading',
-      data: 'Compiling shaders and warming up model...'
-  });
+    self.postMessage({
+        status: 'loading',
+        data: 'Compiling shaders and warming up model...'
+    });
 
-  // Run model with dummy input to initialize WebGPU shaders
-  // This prevents delays during the first real inference
-  await model.generate({
-      input_features: full([1, 80, 3000], 0.0), // Empty spectrogram of standard size
-      max_new_tokens: 1,
-  });
-  
-  // Notify main thread that model is ready
-  self.postMessage({ status: 'ready' });
+    // Run model with dummy input to initialize shaders
+    // This prevents delays during the first real inference
+    const modelInstance = await AutomaticSpeechRecognitionPipeline.getInstance();
+    await modelInstance[2].generate({
+        input_features: full([1, 80, 3000], 0.0), // Empty spectrogram of standard size
+        max_new_tokens: 1,
+    });
+    
+    // Notify main thread that model is ready
+    self.postMessage({ status: 'ready' });
+  } catch (error) {
+    console.error('[Worker] Load error:', error);
+    self.postMessage({
+      status: 'error',
+      error: `Model loading failed: ${error.message}`
+    });
+  }
 } 
 
 /**
@@ -222,26 +249,33 @@ async function load() {
  * - 'finalize': Clean up resources
  */
 self.addEventListener('message', async (e) => {
-  const { type, data } = e.data;
+  try {
+    const { type, data } = e.data;
 
-  switch (type) {
-      case 'load':
-          // Initialize the model
-          load();
-          break;
+    switch (type) {
+        case 'load':
+            // Initialize the model
+            load();
+            break;
 
-      case 'generate':
-          // Process audio data for transcription
-          if (data && data.audio) {
-              await generate(data);
-          }
-          break;
+        case 'generate':
+            // Process audio data for transcription
+            if (data && data.audio) {
+                await generate(data);
+            }
+            break;
 
-      case 'finalize':
-          // Reset state and clean up
-          processing = false;
-          audioBuffer = []; 
-          // No explicit termination - allows for future reuse
-          break;
+        case 'finalize':
+            // Reset state and clean up
+            processing = false;
+            // No explicit termination - allows for future reuse
+            break;
+    }
+  } catch (error) {
+    console.error('[Worker] Message handling error:', error);
+    self.postMessage({
+      status: 'error',
+      error: error.message || 'Unknown worker error'
+    });
   }
 });

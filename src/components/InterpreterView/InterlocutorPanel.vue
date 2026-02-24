@@ -6,13 +6,20 @@ import {useSettingsStore} from "@/stores/SettingsStore.js";
 const messageStore = useMessageStore()
 const settingStore = useSettingsStore()
 
+const emit = defineEmits(['audioProcessingComplete'])
+
 function submitInterlocutorMessage() {
   if (messageStore.interlocutorPhrase !== '') {
+    messageStore.activeEditHistory = []
     messageStore.messageHistory.push({role: "user", content: messageStore.interlocutorPhrase})
     messageStore.generateWords()
     messageStore.generateSentences()
     messageStore.interlocutorPhrase = ''
   }
+}
+
+function handleAudioProcessingComplete() {
+  emit('audioProcessingComplete')
 }
 
 </script>
@@ -24,7 +31,7 @@ function submitInterlocutorMessage() {
         <v-icon color="grey"></v-icon>
       </v-btn>
     </div>
-    <micButton id="mic-btn" v-model="messageStore.interlocutorPhrase" @textAvailable="submitInterlocutorMessage"/>
+    <micButton id="mic-btn" v-model="messageStore.interlocutorPhrase" @textAvailable="submitInterlocutorMessage" @audioProcessingComplete="handleAudioProcessingComplete"/>
     <div id="input-wrapper">
       <div id="message-input-wrapper">
         <v-text-field
