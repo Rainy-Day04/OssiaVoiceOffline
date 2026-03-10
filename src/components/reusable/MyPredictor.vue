@@ -600,7 +600,7 @@ const onGenerate = async () => {
     error.value = `Prediction failed: ${e.message}`;
   } finally {
     loading.value = false;
-  }
+  } 
 };
 
 const insertWord = (word) => {
