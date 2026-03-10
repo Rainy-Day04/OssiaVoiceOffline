@@ -2,6 +2,7 @@
 import BuildSentence from "@/components/InterpreterView/MessageBuilder/tabs/BuildSentence.vue";
 import EditSentence from "@/components/InterpreterView/MessageBuilder/tabs/EditSentence.vue";
 import NewSentence from "@/components/InterpreterView/MessageBuilder/tabs/NewSentence.vue";
+import MyPredictor from "@/components/reusable/MyPredictor.vue";
 import TestVision from "@/components/reusable/TestVision.vue";
 import {useMessageStore} from "@/stores/MessageStore.js";
 import {useSettingsStore} from "@/stores/SettingsStore.js";
@@ -16,25 +17,36 @@ const previousTab = ref('build')
 
 // Handle TestVision textAvailable event
 function handleVisionTextAvailable(visionText) {
-  if (!visionText?.trim()) return;
-  
-  const timestamp = new Date().toLocaleString();
-  settingsStore.context += `\n[Vision Analysis - ${timestamp}]: ${visionText.trim()}`;
-  settingsStore.save();
-  closeVisionOverlay();
-  
-  console.log('[MessageBuilder] Vision text added to context only (no message created):', visionText);
+  if (visionText && visionText.trim()) {
+    // Add the vision result to context only, not as a message
+    const timestamp = new Date().toLocaleString();
+    const contextEntry = `\n[Vision Analysis - ${timestamp}]: ${visionText.trim()}`;
+    
+    // Add to existing context or create new context
+    const currentContext = settingsStore.context || '';
+    settingsStore.context = currentContext + contextEntry;
+    settingsStore.save();
+    
+    // Close the overlay
+    closeVisionOverlay();
+    
+    console.log('[MessageBuilder] Vision text added to context only (no message created):', visionText);
+  }
 }
 
 // Open camera overlay and save current tab
 function openCameraOverlay() {
-  previousTab.value = messageStore.messageTab;
+  // Save current tab before switching
+  if (messageStore.messageTab !== 'camera') {
+    previousTab.value = messageStore.messageTab;
+  }
   showTestVision.value = true;
 }
 
 // Close camera overlay and restore previous tab
 function closeVisionOverlay() {
   showTestVision.value = false;
+  // Restore to previous tab (or default to predictor if it was camera)
   messageStore.messageTab = previousTab.value;
 }
 
@@ -72,6 +84,9 @@ function closeVisionOverlay() {
         <v-tab value="new">
           <v-icon size="30" icon="mdi-comment-plus-outline"/>
         </v-tab>
+        <v-tab value="predictor">
+          <v-icon size="30" icon="mdi-keyboard"/>
+        </v-tab>
         <v-tab value="camera" @click="openCameraOverlay">
           <v-icon size="30" icon="mdi-camera"/>
         </v-tab>
@@ -84,6 +99,7 @@ function closeVisionOverlay() {
           <BuildSentence v-if="messageStore.messageTab === 'build'"/>
           <EditSentence v-else-if="messageStore.messageTab === 'edit'"/>
           <NewSentence v-else-if="messageStore.messageTab === 'new'"/>
+          <MyPredictor v-else-if="messageStore.messageTab === 'predictor'" :isVisible="true" :embedded="true" />
         </div>
       </div>
     </div>
